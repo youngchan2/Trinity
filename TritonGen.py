@@ -41,6 +41,7 @@ class TritonCodeGen:
         self.indices_loop_instance = {}  # Track which loop instance each indices var belongs to
         self.sloop_depth = 0  # Track nested sloop depth
         self.stored_accumulators = set()  # Track accumulators that have been stored in loops
+        self.current_store_tensor = None  # Track current tensor being stored to detect context
         
     def _next_power_of_2(self, n):
         """Round up to the next power of 2"""
@@ -788,8 +789,6 @@ import torch
         self.loop_var_to_tensor_dim = {}
         self.loop_vars = {}
         
-        # Don't restore cross_sloop_memory_tensors - we'll compute it fresh for this kernel
-        # self.cross_sloop_memory_tensors = saved_cross_sloop_memory_tensors
         self.stored_tensor_dims = {}
         self.load_cache = {}  # Reset load cache for each kernel
         self.intermediate_tensor_indices = {}  # Reset intermediate tensor indices
@@ -828,6 +827,9 @@ import torch
         # Identify accumulators
         accumulators = self._identify_accumulators(ast)
         
+        exp_tensors = self._identify_exponentials(ast)
+        self.exp_tensors = exp_tensors  # Save for use in other methods
+
         # Identify cross-sloop tensors
         cross_sloop_tensors = self._identify_cross_sloop_tensors(ast)
         
@@ -1336,10 +1338,116 @@ import torch
         traverse(ast)
         return accumulators
     
+    def _identify_exponentials(self, ast: ASTNode) -> set:
+        """Identify tensors that should use fp32 due to exponential operations"""
+        exp_tensors = set()
+        exp_dependent_tensors = set()
+        
+        # Step 1: Find tensors that directly store exp() results
+        def find_exp_stores(node: ASTNode):
+            if node.node_type == NodeType.STORE and len(node.children) >= 2:
+                tensor_node = node.children[0]
+                value_node = node.children[1]
+                
+                # Check if value is or contains exp operation
+                if self._contains_exp_operation(value_node):
+                    # Get tensor name(s) - but only intermediate tensors, not outputs
+                    if tensor_node.node_type == NodeType.TENSOR:  # Only intermediate tensors
+                        for child in tensor_node.children:
+                            if child.node_type == NodeType.VAR:
+                                exp_tensors.add(child.value)
+            
+            for child in node.children:
+                if isinstance(child, ASTNode):
+                    find_exp_stores(child)
+        
+        # Step 2: Find tensors that use exp tensors (dependency chain)
+        def find_exp_dependencies(node: ASTNode):
+            if node.node_type == NodeType.STORE and len(node.children) >= 2:
+                tensor_node = node.children[0]
+                value_node = node.children[1]
+                
+                # Get the tensor being stored to
+                stored_tensor = None
+                # Only track intermediate tensors, not outputs
+                if tensor_node.node_type == NodeType.TENSOR:
+                    for child in tensor_node.children:
+                        if child.node_type == NodeType.VAR:
+                            stored_tensor = child.value
+                            break
+                
+                # Check if value uses any exp tensors
+                if stored_tensor and self._uses_exp_tensors(value_node, exp_tensors):
+                    exp_dependent_tensors.add(stored_tensor)
+            
+            for child in node.children:
+                if isinstance(child, ASTNode):
+                    find_exp_dependencies(child)
+        
+        # Execute analysis
+        find_exp_stores(ast)
+        
+        # Multiple passes to catch transitive dependencies
+        prev_size = 0
+        while len(exp_tensors) != prev_size:
+            prev_size = len(exp_tensors)
+            find_exp_dependencies(ast)
+            exp_tensors.update(exp_dependent_tensors)
+            exp_dependent_tensors.clear()
+        
+        return exp_tensors
+    
+    def _contains_exp_operation(self, node: ASTNode) -> bool:
+        """Check if a node contains an exponential operation"""
+        if node.node_type == NodeType.EXP:
+            return True
+        
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                if self._contains_exp_operation(child):
+                    return True
+        
+        return False
+    
+    def _uses_exp_tensors(self, node: ASTNode, exp_tensor_set: set) -> bool:
+        """Check if expression uses any tensors from exp_tensor_set"""
+        if node.node_type == NodeType.LOAD and len(node.children) >= 1:
+            tensor_node = node.children[0]
+            if tensor_node.node_type in [NodeType.INPUT, NodeType.OUTPUT, NodeType.TENSOR]:
+                for child in tensor_node.children:
+                    if child.node_type == NodeType.VAR:
+                        if child.value in exp_tensor_set:
+                            return True
+        
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                if self._uses_exp_tensors(child, exp_tensor_set):
+                    return True
+        return False
+    
+    def _contains_exp_tensor_load(self, node: ASTNode, exp_tensor_set: set) -> bool:
+        """Check if a node contains a load of an exp tensor"""
+        if node.node_type == NodeType.LOAD and len(node.children) >= 1:
+            tensor_node = node.children[0]
+            if tensor_node.node_type in [NodeType.INPUT, NodeType.OUTPUT, NodeType.TENSOR]:
+                for child in tensor_node.children:
+                    if child.node_type == NodeType.VAR:
+                        if child.value in exp_tensor_set:
+                            return True
+        
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                if self._contains_exp_tensor_load(child, exp_tensor_set):
+                    return True
+        return False
+    
     def _generate_kernel_accumulator_init(self) -> str:
         """Generate initialization code for kernel accumulators"""
         if not self.kernel_accumulators:
             return ""
+        
+        # Get exp_tensors if available
+        exp_tensors = getattr(self, 'exp_tensors', set())
         
         code = ""
         indent_str = '    ' * self.indent_level
@@ -1388,10 +1496,12 @@ import torch
                 # Generate initialization with the actual dimensions
                 shape_str = ", ".join(actual_shape_dims)
                 # Only add trailing comma for 1D tensors
+                # Use fp32 for tensors in exp_tensors or accumulators
+                dtype = "tl.float32" if tensor in exp_tensors else "tl.float16"
                 if len(actual_shape_dims) == 1:
-                    code += f"{indent_str}{tensor} = tl.zeros(({shape_str},), dtype=tl.float16)\n"
+                    code += f"{indent_str}{tensor} = tl.zeros(({shape_str},), dtype={dtype})\n"
                 else:
-                    code += f"{indent_str}{tensor} = tl.zeros(({shape_str}), dtype=tl.float16)\n"
+                    code += f"{indent_str}{tensor} = tl.zeros(({shape_str}), dtype={dtype})\n"
             elif tensor in self.tensor_shapes:
                 # Fallback to tensor shape with power-of-2 padding
                 shape = self.tensor_shapes[tensor]
@@ -1423,13 +1533,16 @@ import torch
                 # Generate initialization with tl.zeros using padded dimensions
                 padded_shape_str = ", ".join(padded_shape_dims)
                 # Only add trailing comma for 1D tensors
+                # Use fp32 for tensors in exp_tensors or accumulators
+                dtype = "tl.float32" if tensor in exp_tensors else "tl.float16"
                 if len(padded_shape_dims) == 1:
-                    code += f"{indent_str}{tensor} = tl.zeros(({padded_shape_str},), dtype=tl.float16)\n"
+                    code += f"{indent_str}{tensor} = tl.zeros(({padded_shape_str},), dtype={dtype})\n"
                 else:
-                    code += f"{indent_str}{tensor} = tl.zeros(({padded_shape_str}), dtype=tl.float16)\n"
+                    code += f"{indent_str}{tensor} = tl.zeros(({padded_shape_str}), dtype={dtype})\n"
             else:
                 # Default to scalar if shape not found
-                code += f"{indent_str}{tensor} = tl.zeros((1,), dtype=tl.float16)[0]\n"
+                dtype = "tl.float32" if tensor in exp_tensors else "tl.float16"
+                code += f"{indent_str}{tensor} = tl.zeros((1,), dtype={dtype})[0]\n"
         
         return code
     
@@ -1497,11 +1610,20 @@ import torch
                                 slice_exprs.append(f":tl.arange(0, {padded_dim})")
                         
                         # For now, just use mask without slicing
-                        code += f"{indent_str}tl.store({tensor}_ptr + offset_{self.offset_counter}, {tensor}, mask={mask_var})\n"
+                        # Check if tensor is fp32 and needs conversion to fp16 for storage
+                        exp_tensors = getattr(self, 'exp_tensors', set())
+                        store_value = f"{tensor}.to(tl.float16)" if tensor in exp_tensors else tensor
+                        code += f"{indent_str}tl.store({tensor}_ptr + offset_{self.offset_counter}, {store_value}, mask={mask_var})\n"
                     else:
-                        code += f"{indent_str}tl.store({tensor}_ptr + offset_{self.offset_counter}, {tensor}, mask={mask_var})\n"
+                        # Check if tensor is fp32 and needs conversion to fp16 for storage
+                        exp_tensors = getattr(self, 'exp_tensors', set())
+                        store_value = f"{tensor}.to(tl.float16)" if tensor in exp_tensors else tensor
+                        code += f"{indent_str}tl.store({tensor}_ptr + offset_{self.offset_counter}, {store_value}, mask={mask_var})\n"
                 else:
-                    code += f"{indent_str}tl.store({tensor}_ptr + offset_{self.offset_counter}, {tensor})\n"
+                    # Check if tensor is fp32 and needs conversion to fp16 for storage
+                    exp_tensors = getattr(self, 'exp_tensors', set())
+                    store_value = f"{tensor}.to(tl.float16)" if tensor in exp_tensors else tensor
+                    code += f"{indent_str}tl.store({tensor}_ptr + offset_{self.offset_counter}, {store_value})\n"
                 self.offset_counter += 1
             else:
                 # Default simple store for scalars
@@ -1956,11 +2078,14 @@ import torch
         sloop_intermediate_tensors = set()
         # Identify cross-sloop tensors that need memory storage
         cross_sloop_memory_tensors = set()
+        # Identify tensors that need fp32 due to exponential operations
+        exp_tensors = set()
         if ast:
             accumulators = self._identify_accumulators(ast)
             cross_sloop_tensors = self._identify_cross_sloop_tensors(ast)
             sloop_intermediate_tensors = self._identify_sloop_intermediate_tensors(ast)
             cross_sloop_memory_tensors = self._identify_cross_sloop_memory_tensors(ast)
+            exp_tensors = self._identify_exponentials(ast)
             
             # Only remove accumulators that are NOT cross-sloop tensors
             # Cross-sloop accumulators need memory to maintain values between sloops
@@ -2084,7 +2209,9 @@ import torch
                 
                 # Initialize with zeros if it's an accumulator OR if it's used across different sloops OR if it's defined inside sloop
                 if tensor_name in accumulators or tensor_name in cross_sloop_tensors or tensor_name in sloop_intermediate_tensors:
-                    code += f"    {tensor_name} = tl.zeros({shape_str}, dtype=tl.float16)\n"
+                    # Use fp32 only for tensors that involve exponential operations (including exp-related accumulators)
+                    dtype = "tl.float32" if tensor_name in exp_tensors else "tl.float16"
+                    code += f"    {tensor_name} = tl.zeros({shape_str}, dtype={dtype})\n"
                 # else:
                 #     # For non-accumulator tensors, just comment that they'll be assigned
                 #     code += f"    # {tensor_name} will be assigned without initialization\n"
@@ -2597,6 +2724,9 @@ def {kernel_name}(
         tensor_name = tensor_node.children[0].value
         tensor_type = tensor_node.node_type
         
+        # Set current store tensor context for binary/unary ops
+        self.current_store_tensor = tensor_name
+        
         # Skip store operation if this is a kernel accumulator
         # UNLESS it's also a cross-sloop memory tensor (needs immediate store)
         # OR if the store's index pattern matches current loop variables
@@ -2819,6 +2949,33 @@ def {kernel_name}(
             value_expr = self._generate_node_without_loads(val_node)
         else:
             value_expr = self._generate_node(val_node)
+        
+        # If storing to an exp_tensor (fp32), remove unnecessary .to(tl.float16) conversions
+        exp_tensors = getattr(self, 'exp_tensors', set())
+        if tensor_name in exp_tensors:
+            # Remove .to(tl.float16) conversions for fp32 tensors
+            value_expr = value_expr.replace('.to(tl.float16)', '')
+        
+        # Check if value expression involves fp32 tensors that need conversion for fp16 storage
+        # This handles cases like storing O (fp32) to O2 (fp16)
+        # Output tensors are always fp16, exp_tensors only contains intermediate tensors (NodeType.TENSOR)
+        if tensor_type == NodeType.OUTPUT:
+            # Storing to output tensor (always fp16)
+            # Check if any exp tensor (fp32) is involved in the value expression
+            contains_fp32 = False
+            for exp_tensor in exp_tensors:
+                # Check for various patterns: direct reference, temp variables, etc.
+                if exp_tensor in value_expr or f"temp" in value_expr:
+                    # More aggressive check: if we're using temps that might be from fp32 tensors
+                    contains_fp32 = True
+                    break
+            
+            # If we found fp32 involvement or if we're dealing with complex expressions from fp32 tensors
+            if contains_fp32 or "tl.reshape" in value_expr or "tl.permute" in value_expr:
+                # Check if the expression might involve fp32 tensors
+                # Add conversion if not already present
+                if not value_expr.endswith('.to(tl.float16)'):
+                    value_expr = f"{value_expr}.to(tl.float16)"
         
         # Use proper indentation based on current context
         indent_str = '    ' * self.indent_level
@@ -3054,7 +3211,15 @@ def {kernel_name}(
         else:
             right = self._generate_node(right_child)
             
-        return f"({left} {op} {right}).to(tl.float16)"
+        # Check if we're storing to an exp tensor (fp32)
+        exp_tensors = getattr(self, 'exp_tensors', set())
+        current_tensor = getattr(self, 'current_store_tensor', None)
+        
+        if current_tensor and current_tensor in exp_tensors:
+            # Don't add .to(tl.float16) for fp32 tensors
+            return f"({left} {op} {right})"
+        else:
+            return f"({left} {op} {right}).to(tl.float16)"
     
     def _generate_unary_op(self, node: ASTNode, op: str) -> str:
         """Generate unary operation"""
@@ -3066,11 +3231,19 @@ def {kernel_name}(
         else:
             operand = self._generate_node(child)
         
+        # Check if we're storing to an exp tensor (fp32)
+        exp_tensors = getattr(self, 'exp_tensors', set())
+        current_tensor = getattr(self, 'current_store_tensor', None)
+        
         # For exp, sqrt, and sigmoid operations, convert input to float32
         if op in ["tl.exp", "tl.sqrt", "tl.sigmoid"]:
             return f"{op}({operand}.to(tl.float32)).to(tl.float16)"
         else:
-            return f"{op}({operand}).to(tl.float16)"
+            # Don't add .to(tl.float16) for fp32 tensors
+            if current_tensor and current_tensor in exp_tensors:
+                return f"{op}({operand})"
+            else:
+                return f"{op}({operand}).to(tl.float16)"
     
     def _generate_matmul(self, node: ASTNode) -> str:
         """Generate matrix multiplication"""
@@ -3153,9 +3326,29 @@ def {kernel_name}(
             right = right_child.temp_var
         else:
             right = self._generate_node(right_child)
-            
-        # For DNN compiler, use tl.dot with allow_tf32=False for exact computation
-        return f"tl.dot({left}, {right}).to(tl.float16)"
+        
+        # Check if we're storing to an exp tensor (fp32)
+        exp_tensors = getattr(self, 'exp_tensors', set())
+        current_tensor = getattr(self, 'current_store_tensor', None)
+        
+        # Check if either operand involves exp tensors
+        left_is_exp = self._contains_exp_tensor_load(left_child, exp_tensors)
+        right_is_exp = self._contains_exp_tensor_load(right_child, exp_tensors)
+        
+        # If storing to fp32 tensor or one operand is fp32, handle type conversion
+        if current_tensor and current_tensor in exp_tensors:
+            # Storing to fp32 tensor
+            if left_is_exp and not right_is_exp:
+                # Left is fp32, convert right to fp32
+                right = f"{right}.to(tl.float32)"
+            elif right_is_exp and not left_is_exp:
+                # Right is fp32, convert left to fp32
+                left = f"{left}.to(tl.float32)"
+            # If both are exp or neither, no conversion needed
+            return f"tl.dot({left}, {right})"
+        else:
+            # Storing to fp16 tensor
+            return f"tl.dot({left}, {right}).to(tl.float16)"
     
     def _generate_reduce_sum(self, node: ASTNode) -> str:
         """Generate reduce sum operation"""
@@ -3458,31 +3651,6 @@ def {kernel_name}(
                 inner_matmul.temp_var = temp_name
         
         return code
-    
-    def _process_nested_ops(self, node: ASTNode, code_ref):
-        """Process nested operations and mark them for temporary variable generation"""
-        if node.node_type == NodeType.MATMUL:
-            # Check if right child is also a matmul
-            if len(node.children) > 1 and node.children[1].node_type == NodeType.MATMUL:
-                # This will be handled in _generate_matmul
-                pass
-        
-        # Process children
-        for child in node.children:
-            if isinstance(child, ASTNode):
-                self._process_nested_ops(child, code_ref)
-    
-    def _get_final_expression(self, node: ASTNode) -> str:
-        """Get the final expression after processing nested operations"""
-        # Generate without loads, using temporary variables where needed
-        return self._generate_node_without_loads(node)
-    
-    def _walk_tree(self, node: ASTNode):
-        """Walk the AST tree and yield all nodes"""
-        yield node
-        for child in node.children:
-            if isinstance(child, ASTNode):
-                yield from self._walk_tree(child)
     
     def _find_nested_matmuls(self, node: ASTNode, matmuls=None):
         """Find all matmul nodes that have nested matmuls"""
