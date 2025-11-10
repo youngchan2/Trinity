@@ -244,20 +244,43 @@ class BackwardIRGenerator:
         self.backward_input_names = {self._gradient_name(name) for name in self.forward_output_names}
         self.backward_output_names = {self._gradient_name(name) for name in self.forward_input_names}
 
-        sections = self._generate_gradient_sections()
-        if self.needs_recompute and hasattr(self, "forward_ast"):
-            # Filter out off-chip tensor stores from recompute
-            recompute_ast = self._filter_offchip_stores(clone_ast(self.forward_ast))
-            sections.insert(0, recompute_ast)
+        # Collect all operations as a flat list
+        all_ops: List[ASTNode] = []
 
-        backward_ir = self._chain_seq(sections)
+        if self.needs_recompute or True:  # Check first to set needs_recompute
+            self._check_recompute_needed()
+
+        if self.needs_recompute:
+            # Generate recompute operations
+            recompute_ops = self._generate_recompute_ops_from_tape()
+            all_ops.extend(recompute_ops)
+
+        # Generate gradient operations
+        gradient_ops = self._generate_gradient_ops()
+        all_ops.extend(gradient_ops)
+
+        # Chain all operations with seq (no outer ploop needed)
+        backward_ir = self._chain_seq(all_ops)
         backward_ir = self._adjust_gradient_io(backward_ir)
 
         # Convert AST back to string
         return self._ast_to_ir_string(backward_ir)
 
-    def _generate_gradient_sections(self) -> List[ASTNode]:
-        """Generate gradient sections (main + weight)"""
+    def _check_recompute_needed(self):
+        """Check if recomputation is needed"""
+        for op in reversed(self.tape):
+            if op.node_type != NodeType.STORE or not op.children:
+                continue
+
+            tensor_name = self._extract_tensor_name(op.children[0])
+            if not tensor_name:
+                continue
+
+            if len(op.children) >= 2:
+                self._add_recompute_if_needed(op.children[1])
+
+    def _generate_gradient_ops(self) -> List[ASTNode]:
+        """Generate gradient operations (not wrapped in seq)"""
         gradient_ops: List[ASTNode] = []
 
         for op in reversed(self.tape):
@@ -272,14 +295,165 @@ class BackwardIRGenerator:
             if grad_ops:
                 gradient_ops.extend(grad_ops)
 
-        sections: List[ASTNode] = []
+        # Wrap each operation individually with appropriate loops
+        wrapped_ops: List[ASTNode] = []
+        for op in gradient_ops:
+            target_name = ""
+            if op.node_type == NodeType.STORE and op.children:
+                target_name = self._extract_tensor_name(op.children[0])
 
-        if gradient_ops:
-            wrapped = self._wrap_gradients_naive(gradient_ops)
-            if wrapped:
-                sections.append(wrapped)
+            op_clone = clone_ast(op)
 
-        return sections
+            if self._is_weight_gradient(target_name):
+                inner = self._make_loop(0, 4544, 'tile_k', 'k', op_clone)
+                wrapped = self._make_loop(0, 4544, 'tile_n', 'n', inner)
+            else:
+                wrapped = self._make_loop(0, 4544, 'tile_n', 'n', op_clone)
+
+            wrapped_ops.append(wrapped)
+
+        return wrapped_ops
+
+    def _generate_recompute_ops_from_tape(self) -> List[ASTNode]:
+        """Generate recompute operations from tape (returns list, not chained)"""
+        recompute_ops: List[ASTNode] = []
+
+        # Extract loop bounds from forward AST
+        loop_bounds = self._extract_loop_bounds_from_forward()
+
+        # Iterate through tape and wrap each on-chip tensor store
+        for op in self.tape:
+            if op.node_type != NodeType.STORE or not op.children:
+                continue
+
+            tensor_name = self._extract_tensor_name(op.children[0])
+            if not tensor_name:
+                continue
+
+            # Only include on-chip tensors in recompute
+            info = self.tensor_info.get(tensor_name)
+            if info and not info.is_offchip:
+                # Clone the store operation
+                store_clone = clone_ast(op)
+
+                # Wrap with naive loops based on operation characteristics
+                wrapped = self._wrap_store_with_naive_loops(store_clone, loop_bounds)
+                recompute_ops.append(wrapped)
+
+        return recompute_ops
+
+    def _extract_loop_bounds_from_forward(self) -> Dict[str, tuple]:
+        """Extract loop bounds from forward AST"""
+        bounds = {}
+
+        if hasattr(self, 'forward_ast') and self.forward_ast.node_type == NodeType.PLOOP:
+            # Extract ploop bounds (n dimension)
+            if len(self.forward_ast.children) >= 4:
+                start = self.forward_ast.children[0].value if self.forward_ast.children[0].node_type == NodeType.NUM else 0
+                end = self.forward_ast.children[1].value if self.forward_ast.children[1].node_type == NodeType.NUM else 4544
+                tile_size = self.forward_ast.children[2].value if self.forward_ast.children[2].node_type == NodeType.NUM else 64
+                var_name = self.forward_ast.children[3].value if self.forward_ast.children[3].node_type == NodeType.VAR else 'n'
+
+                bounds['n'] = (start, end, tile_size, var_name)
+
+            # Look for sloop bounds (k dimension) in forward AST
+            for child in self.forward_ast.children[4:]:
+                if child.node_type == NodeType.SLOOP and len(child.children) >= 4:
+                    start = child.children[0].value if child.children[0].node_type == NodeType.NUM else 0
+                    end = child.children[1].value if child.children[1].node_type == NodeType.NUM else 4544
+                    tile_var = child.children[2].value if child.children[2].node_type == NodeType.VAR else 'tile_k'
+                    var_name = child.children[3].value if child.children[3].node_type == NodeType.VAR else 'k'
+
+                    bounds['k'] = (start, end, tile_var, var_name)
+                    break
+
+        # Default bounds if not found
+        if 'n' not in bounds:
+            bounds['n'] = (0, 4544, 64, 'n')
+        if 'k' not in bounds:
+            bounds['k'] = (0, 4544, 'tile_k', 'k')
+
+        return bounds
+
+    def _wrap_store_with_naive_loops(self, store_op: ASTNode, loop_bounds: Dict[str, tuple]) -> ASTNode:
+        """Wrap a store operation with appropriate naive loops"""
+        # Check if operation contains matmul with INPUT (needs k dimension loop)
+        # Matmul with only TENSOR operands (like Q @ K^T) doesn't need k loop
+        has_matmul_with_input = self._has_matmul_with_input(store_op)
+
+        if has_matmul_with_input:
+            # Create nested loops: outer n loop, inner k loop
+            k_bounds = loop_bounds.get('k', (0, 4544, 'tile_k', 'k'))
+            n_bounds = loop_bounds.get('n', (0, 4544, 'tile_n', 'n'))
+
+            # Inner loop (k dimension)
+            inner = ASTNode(NodeType.LOOP, [
+                ASTNode(NodeType.NUM, [], k_bounds[0]),
+                ASTNode(NodeType.NUM, [], k_bounds[1]),
+                ASTNode(NodeType.VAR, [], k_bounds[2]),
+                ASTNode(NodeType.VAR, [], k_bounds[3]),
+                store_op
+            ])
+
+            # Outer loop (n dimension)
+            outer = ASTNode(NodeType.LOOP, [
+                ASTNode(NodeType.NUM, [], n_bounds[0]),
+                ASTNode(NodeType.NUM, [], n_bounds[1]),
+                ASTNode(NodeType.VAR, [], n_bounds[2]),
+                ASTNode(NodeType.VAR, [], n_bounds[3]),
+                inner
+            ])
+
+            return outer
+        else:
+            # Single loop (n dimension only)
+            n_bounds = loop_bounds.get('n', (0, 4544, 64, 'n'))
+
+            return ASTNode(NodeType.LOOP, [
+                ASTNode(NodeType.NUM, [], n_bounds[0]),
+                ASTNode(NodeType.NUM, [], n_bounds[1]),
+                ASTNode(NodeType.VAR, [], n_bounds[2] if isinstance(n_bounds[2], str) else 'tile_n'),
+                ASTNode(NodeType.VAR, [], n_bounds[3]),
+                store_op
+            ])
+
+    def _has_matmul(self, node: ASTNode) -> bool:
+        """Check if node contains a matmul operation"""
+        if node.node_type == NodeType.MATMUL:
+            return True
+
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                if self._has_matmul(child):
+                    return True
+
+        return False
+
+    def _has_matmul_with_input(self, node: ASTNode) -> bool:
+        """Check if node contains a matmul operation that uses INPUT (not just TENSOR)"""
+        if node.node_type == NodeType.MATMUL:
+            # Check if any operand is INPUT
+            return self._uses_input(node)
+
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                if self._has_matmul_with_input(child):
+                    return True
+
+        return False
+
+    def _uses_input(self, node: ASTNode) -> bool:
+        """Check if node uses INPUT tensor (recursively)"""
+        if node.node_type == NodeType.LOAD:
+            if node.children and node.children[0].node_type == NodeType.INPUT:
+                return True
+
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                if self._uses_input(child):
+                    return True
+
+        return False
 
     def _generate_gradient_for_operation(self, store_op: ASTNode, tensor_name: str) -> List[ASTNode]:
         """Generate gradient computation for a specific operation using gradient rules"""
@@ -484,29 +658,6 @@ class BackwardIRGenerator:
         # Simple heuristic: check if name contains W
         return 'W' in tensor_name
 
-    def _wrap_gradients_naive(self, ops: List[ASTNode]) -> Optional[ASTNode]:
-        """Wrap gradient operations in naive loop structures."""
-        if not ops:
-            return None
-
-        wrapped_ops: List[ASTNode] = []
-        for op in ops:
-            target_name = ""
-            if op.node_type == NodeType.STORE and op.children:
-                target_name = self._extract_tensor_name(op.children[0])
-
-            op_clone = clone_ast(op)
-
-            if self._is_weight_gradient(target_name):
-                inner = self._make_loop(0, 4544, 'tile_k', 'k', op_clone)
-                wrapped = self._make_loop(0, 4544, 'tile_n', 'n', inner)
-            else:
-                wrapped = self._make_loop(0, 4544, 'tile_n', 'n', op_clone)
-
-            wrapped_ops.append(wrapped)
-
-        return self._chain_seq(wrapped_ops)
-
     def _make_loop(self, start: int, end: int, tile_name: str, var_name: str, body: ASTNode) -> ASTNode:
         """Create a naive sequential loop node"""
         return ASTNode(NodeType.LOOP, [
@@ -692,8 +843,8 @@ def bwd_generate(ir_expr: str, ir_id: int):
         f.write(backward_ir)
 
     print(f"Backward IR saved to '{output_file}'")
-    for idx, computation in enumerate(generator.tape):
-        print(f"[{idx}]: {computation}")
+    # for idx, computation in enumerate(generator.tape):
+    #     print(f"[{idx}]: {computation}")
 
 def main():
     """Main function"""
