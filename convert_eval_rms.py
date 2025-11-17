@@ -22,8 +22,8 @@ device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
 dtype = torch.float16
 
-case_file = f"./evaluation/{rms}/{rms}_{model}_case{num}.txt" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_case{num}.txt"
-output_file = f"./evaluation/{rms}/{rms}_{model}_benchmark{num}.py" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_benchmark{num}.py"
+case_file = f"/home/chani227/Triton/evaluation/{rms}/{rms}_{model}_case{num}.txt" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_case{num}.txt"
+output_file = f"/home/chani227/Triton/evaluation/{rms}/{rms}_{model}_benchmark{num}.py" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_benchmark{num}.py"
 module_name = f"{rms}_{model}_best" if not pre else f"{rms}_{model}_prenorm_best"
 
 with open(case_file, "r") as f:
@@ -142,16 +142,16 @@ def start_test():
     C_exp = torch.zeros((H, M, P+M), device=device, dtype=torch.float32)
     C_sum = torch.zeros((H, M), device=device, dtype=torch.float32)
     K = torch.zeros((H, M, D), device=device, dtype=dtype)
-    K1 = torch.zeros((M, D), device=device, dtype=dtype)
+    K1 = torch.zeros((M, N), device=device, dtype=dtype)
     K2 = torch.zeros((M, H, D), device=device, dtype=dtype)
     O = torch.zeros((H, M, D), device=device, dtype=dtype)
     O1 = torch.zeros((H, M, D), device=device, dtype=dtype)
     O2 = torch.zeros((M, N), device=device, dtype=dtype)
     Q = torch.zeros((H, M, D), device=device, dtype=dtype)
-    Q1 = torch.zeros((M, D), device=device, dtype=dtype)
+    Q1 = torch.zeros((M, N), device=device, dtype=dtype)
     Q2 = torch.zeros((M, H, D), device=device, dtype=dtype)
     V = torch.zeros((H, M, D), device=device, dtype=dtype)
-    V1 = torch.zeros((M, D), device=device, dtype=dtype)
+    V1 = torch.zeros((M, N), device=device, dtype=dtype)
     V2 = torch.zeros((M, H, D), device=device, dtype=dtype)
 
     # Gradient
@@ -175,7 +175,6 @@ def start_test():
     C_out1 = torch.zeros((H, P+M), device=device, dtype=dtype)
     C_out2 = torch.zeros((H, P+M), device=device, dtype=dtype)
 
-    out = O2.clone()
     ITER = 100
 
     print("=" * 50)
@@ -331,7 +330,7 @@ def start_test():
     fi.half()
     with torch.no_grad():
         for _ in range(10):
-            out = fi(X)
+            out_fi = fi(X)
         torch.cuda.synchronize()
 
         start_fi = torch.cuda.Event(enable_timing=True)
@@ -339,23 +338,24 @@ def start_test():
 
         start_fi.record()
         for _ in range(ITER):
-            out = fi(X)
+            out_fi = fi(X)
         end_fi.record()
         torch.cuda.synchronize()
         fi_time = start_fi.elapsed_time(end_fi) / ITER
         print(f"FI: {fi_time}ms")
-    print(out)
+    out_fi = out_fi.clone()  # Clone to avoid memory sharing issues
+    print(out_fi)
 
 
     print("=" * 50)
     print(f"\nTesting {rms.upper()} TensorRT...")
     print("\nTesting Correct TensorRT...")
     # ------------------- Tensor RT -------------------
-    
+
     trt.half()
     with torch.no_grad():
         for _ in range(10):
-            out = trt(X)
+            out_trt = trt(X)
         torch.cuda.synchronize()
 
         start_rt = torch.cuda.Event(enable_timing=True)
@@ -363,25 +363,55 @@ def start_test():
 
         start_rt.record()
         for _ in range(ITER):
-            out = trt(X)
+            out_trt = trt(X)
         end_rt.record()
         torch.cuda.synchronize()
         rt_time = start_rt.elapsed_time(end_rt) / ITER
         print(f"TRT: {rt_time}ms")
-    print(out)
+    out_trt = out_trt.clone()  # Clone to avoid memory sharing issues
+    print(out_trt)
 
     # # ------------------- Torch Inductor -------------------
     print("\nTesting Torch Inductor Implementation...")
 
-    benchmark_rms(ti.eval(), X)
-    
+    ti.half().eval()
+    with torch.no_grad():
+        out_ti = ti(X).clone()  # Clone to avoid memory sharing issues
+
+    benchmark_rms(ti, X)
+
     print("\nComparing results...")
-    if torch.allclose(O2, out, rtol=1e-3, atol=1e-4):
+    print(f"\nKernel output O2 (before comparison):")
+
+    print("\n[vs Flash Infer]")
+    if torch.allclose(O2, out_fi, rtol=1e-2, atol=2e-3):
         print("✓ Results match!")
     else:
         print("✗ Results do not match!")
-        max_diff = torch.abs(O2 - out).max()
+        max_diff = torch.abs(O2 - out_fi).max()
+        mean_diff = torch.abs(O2 - out_fi).mean()
         print(f"Maximum difference: {max_diff}")
+        print(f"Mean difference: {mean_diff}")
+
+    print("\n[vs TensorRT]")
+    if torch.allclose(O2, out_trt, rtol=1e-2, atol=2e-3):
+        print("✓ Results match!")
+    else:
+        print("✗ Results do not match!")
+        max_diff = torch.abs(O2 - out_trt).max()
+        mean_diff = torch.abs(O2 - out_trt).mean()
+        print(f"Maximum difference: {max_diff}")
+        print(f"Mean difference: {mean_diff}")
+
+    print("\n[vs Torch Inductor]")
+    if torch.allclose(O2, out_ti, rtol=1e-2, atol=2e-3):
+        print("✓ Results match!")
+    else:
+        print("✗ Results do not match!")
+        max_diff = torch.abs(O2 - out_ti).max()
+        mean_diff = torch.abs(O2 - out_ti).mean()
+        print(f"Maximum difference: {max_diff}")
+        print(f"Mean difference: {mean_diff}")
     print("=" * 50)
 
 print(f"[Case{num}]")

@@ -534,7 +534,7 @@ class TensorRT_Vanilla(nn.Module):
                 weights = F.softmax(scores, dim=-1)
 
                 output = torch.matmul(weights, v_cache)
-                output = output.view(seq_len, self.H*self.D)
+                output = output.transpose(0, 1).contiguous().view(seq_len, self.H*self.D)
 
                 return output
 
@@ -697,7 +697,7 @@ class TensorRT_PreNorm(nn.Module):
                 weights = F.softmax(scores, dim=-1)
 
                 output = torch.matmul(weights, v_cache)
-                output = output.view(seq_len, self.H*self.D)
+                output = output.transpose(0, 1).contiguous().view(seq_len, self.H*self.D)
 
                 return output
 
@@ -856,7 +856,7 @@ class TensorRT_KeyFormer(nn.Module):
                 perturb_out = F.softmax(perturb, dim=-1)
 
                 output = torch.matmul(weights, v_cache)
-                output = output.view(seq_len, self.H*self.D)
+                output = output.transpose(0, 1).contiguous().view(seq_len, self.H*self.D)
 
                 return output, perturb_out
 
@@ -1021,7 +1021,7 @@ class TensorRT_NormKeyFormer(nn.Module):
                 perturb_out = F.softmax(perturb, dim=-1)
 
                 output = torch.matmul(weights, v_cache)
-                output = output.view(seq_len, self.H*self.D)
+                output = output.transpose(0, 1).contiguous().view(seq_len, self.H*self.D)
 
                 return output, perturb_out
 
@@ -1517,7 +1517,7 @@ class TensorRT_RoCo(nn.Module):
                 weights_sqr_sum = weights.pow(2).sum(dim=1)
 
                 output = torch.matmul(weights, v_cache)
-                output = output.view(seq_len, self.H*self.D)
+                output = output.transpose(0, 1).contiguous().view(seq_len, self.H*self.D)
 
                 return output, weights_sum, weights_sqr_sum
 
@@ -1686,7 +1686,7 @@ class TensorRT_NormRoCo(nn.Module):
                 weights_sqr_sum = weights.pow(2).sum(dim=1)
 
                 output = torch.matmul(weights, v_cache)
-                output = output.view(seq_len, self.H*self.D)
+                output = output.transpose(0, 1).contiguous().view(seq_len, self.H*self.D)
 
                 return output, weights_sum, weights_sqr_sum
 
