@@ -19,3 +19,10 @@ Trinity
 Training/
 gluon/
 benchmark_*/
+evaluation/prenorm/
+evaluation/qknorm/
+evaluation/vanilla/
+evaluation/keyformer/
+evaluation/roco/
+evaluation/ffn/
+format.py
