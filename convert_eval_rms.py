@@ -1,4 +1,4 @@
-from convert_module import convert_ir_to_triton
+from codegen.convert_module import convert_ir_to_triton
 from baseline.inductor import benchmark_rms
 import argparse
 import torch

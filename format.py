@@ -126,7 +126,7 @@ args = parser.parse_args()
 # case_file = f"{os.getcwd()}/benchmark_{args.m}/{args.m}_case{args.n}.txt"
 # case_file = f"./evaluation/vanilla/vanilla_falcon_case{args.n}.txt"
 
-case_file = f"./Training/backward_ir.txt"
+case_file = f"./evaluation/prenorm/prenorm_llama_case1475.txt"
 
 with open(case_file, "r") as f:
     input_code = f.read().strip()

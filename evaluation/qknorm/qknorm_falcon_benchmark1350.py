@@ -108,10 +108,12 @@ def kernel_0(
     # Skipped empty sloop with dummy body
     O = (O / C_sum[:, :, None])
     temp_10 = tl.permute(O, (1, 0, 2))
+    # Squeeze dimension 1 from O
+    temp_11 = tl.reshape(temp_10, (M, D))
     offset_8 = (tl.arange(0, 16))[:, None] * O2_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * O2_stride1
     n_indices = n + tl.arange(0, BLOCK_N)
     mask_6 = (n_indices < N)[None, :]
-    tl.store(O2_ptr + offset_8, tl.reshape(temp_10, (M, D)).to(tl.float16), mask=mask_6)
+    tl.store(O2_ptr + offset_8, temp_11.to(tl.float16), mask=mask_6)
 
 
 # Metadata for benchmark.py

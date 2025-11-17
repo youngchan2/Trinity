@@ -161,10 +161,12 @@ def kernel_1(
     offset_3 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * O_stride0 + (tl.arange(0, 16))[None, :, None] * O_stride1 + (tl.arange(0, 64))[None, None, :] * O_stride2
     temp_2 = tl.load(O_ptr + offset_3)
     temp_3 = tl.permute(temp_2, (1, 0, 2))
+    # Squeeze dimension 1 from O
+    temp_4 = tl.reshape(temp_3, (M, D))
     offset_4 = (tl.arange(0, 16))[:, None] * O2_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * O2_stride1
     n_indices = n + tl.arange(0, BLOCK_N)
     mask_6 = (n_indices < N)[None, :]
-    tl.store(O2_ptr + offset_4, tl.reshape(temp_3, (M, D)).to(tl.float16), mask=mask_6)
+    tl.store(O2_ptr + offset_4, temp_4, mask=mask_6)
 
 
 # Metadata for benchmark.py

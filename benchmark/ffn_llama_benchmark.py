@@ -14,7 +14,7 @@ import json
 import argparse
 import shutil
 
-from convert_module import convert_ir_to_triton
+from codegen.convert_module import convert_ir_to_triton
 # from ffn_ref import TRT_Llama_Ffn, PyTorchTensorProgram
 
 @dataclass

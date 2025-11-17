@@ -14,7 +14,7 @@ from tqdm import tqdm
 import json
 import argparse
 
-from convert_module import convert_ir_to_triton
+from codegen.convert_module import convert_ir_to_triton
 # from ref_rms import TensorRT_kernel_RMSNorm,  SimpleAttention
 
 @dataclass

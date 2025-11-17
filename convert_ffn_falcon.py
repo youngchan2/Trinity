@@ -1,5 +1,5 @@
-from convert_module import convert_ir_to_triton
-from ffn_ref import TRT_Falcon_Ffn
+from codegen.convert_module import convert_ir_to_triton
+from baseline.ffn_ref import TRT_Falcon_Ffn
 #from attac import kernel1
 import argparse
 import torch

@@ -63,29 +63,29 @@ def kernel_0(
     n = 0 + tl.program_id(0) * BLOCK_N
     
     # Sequential loop k from 0 to 4544 with tile size BLOCK_K
-    for k in range(0, 4544, BLOCK_K):
+    for k in range(0, 4096, BLOCK_K):
         offset_0 = (tl.arange(0, 16))[:, None] * X_stride0 + (k + tl.arange(0, BLOCK_K))[None, :] * X_stride1
         k_indices = k + tl.arange(0, BLOCK_K)
         mask_0 = (k_indices < N)[None, :]
         temp_0 = tl.load(X_ptr + offset_0, mask=mask_0, other=0.0)
-        X2 = ((1 * X2).to(tl.float16) + tl.sum((temp_0 * temp_0).to(tl.float16), axis=1, dtype=tl.float16)).to(tl.float16)
+        X2 = ((1 * X2).to(tl.float16) + tl.sum((temp_0 * temp_0).to(tl.float16), axis=1)).to(tl.float16)
         offset_1 = (k + tl.arange(0, BLOCK_K))[:, None] * WQ_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WQ_stride1
         n_indices = n + tl.arange(0, BLOCK_N)
         mask_1 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
         temp_1 = tl.load(WQ_ptr + offset_1, mask=mask_1, other=0.0)
-        Q1 = (tl.dot(temp_0, temp_1).to(tl.float16) + (1 * Q1).to(tl.float16)).to(tl.float16)
+        Q1 = ((Q1 * 1).to(tl.float16) + tl.dot(temp_0, temp_1).to(tl.float16)).to(tl.float16)
         offset_2 = (k + tl.arange(0, BLOCK_K))[:, None] * WK_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WK_stride1
         mask_2 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
         temp_2 = tl.load(WK_ptr + offset_2, mask=mask_2, other=0.0)
-        K1 = (tl.dot(temp_0, temp_2).to(tl.float16) + (1 * K1).to(tl.float16)).to(tl.float16)
+        K1 = ((K1 * 1).to(tl.float16) + tl.dot(temp_0, temp_2).to(tl.float16)).to(tl.float16)
         offset_3 = (k + tl.arange(0, BLOCK_K))[:, None] * WV_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WV_stride1
         mask_3 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
         temp_3 = tl.load(WV_ptr + offset_3, mask=mask_3, other=0.0)
-        V1 = (tl.dot(temp_0, temp_3).to(tl.float16) + (1 * V1).to(tl.float16)).to(tl.float16)
+        V1 = ((V1 * 1).to(tl.float16) + tl.dot(temp_0, temp_3).to(tl.float16)).to(tl.float16)
     # Skipped empty sloop with dummy body
-    Q1 = (Q1 / tl.sqrt((X2 / 4544).to(tl.float16).to(tl.float32)).to(tl.float16)[:, None]).to(tl.float16)
-    K1 = (K1 / tl.sqrt((X2 / 4544).to(tl.float16).to(tl.float32)).to(tl.float16)[:, None]).to(tl.float16)
-    V1 = (V1 / tl.sqrt((X2 / 4544).to(tl.float16).to(tl.float32)).to(tl.float16)[:, None]).to(tl.float16)
+    Q1 = (Q1 / tl.sqrt((X2 / 4096).to(tl.float16).to(tl.float32)).to(tl.float16)[:, None]).to(tl.float16)
+    K1 = (K1 / tl.sqrt((X2 / 4096).to(tl.float16).to(tl.float32)).to(tl.float16)[:, None]).to(tl.float16)
+    V1 = (V1 / tl.sqrt((X2 / 4096).to(tl.float16).to(tl.float32)).to(tl.float16)[:, None]).to(tl.float16)
     temp_4 = tl.expand_dims(Q1, 1)
     Q = tl.permute(temp_4, (1, 0, 2))
     temp_5 = tl.expand_dims(K1, 1)
@@ -112,10 +112,12 @@ def kernel_0(
     # Skipped empty sloop with dummy body
     O = (O / C_sum[:, :, None])
     temp_10 = tl.permute(O, (1, 0, 2))
+    # Squeeze dimension 1 from O
+    temp_11 = tl.reshape(temp_10, (M, D))
     offset_8 = (tl.arange(0, 16))[:, None] * O2_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * O2_stride1
     n_indices = n + tl.arange(0, BLOCK_N)
     mask_6 = (n_indices < N)[None, :]
-    tl.store(O2_ptr + offset_8, tl.reshape(temp_10, (M, D)).to(tl.float16), mask=mask_6)
+    tl.store(O2_ptr + offset_8, temp_11.to(tl.float16), mask=mask_6)
 
 
 # Metadata for benchmark.py

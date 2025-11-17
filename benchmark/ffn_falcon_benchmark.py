@@ -14,8 +14,8 @@ import json
 import argparse
 import shutil
 
-from convert_module import convert_ir_to_triton
-from ffn_ref import TRT_Falcon_Ffn, PyTorchTensorProgram
+from codegen.convert_module import convert_ir_to_triton
+from baseline.ffn_ref import TRT_Falcon_Ffn, PyTorchTensorProgram
 
 @dataclass
 class BenchmarkResult:

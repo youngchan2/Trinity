@@ -1,5 +1,5 @@
-from convert_module import convert_ir_to_triton
-from ffn_ref import TRT_Llama_Ffn, SimpleFFN
+from codegen.convert_module import convert_ir_to_triton
+from baseline.ffn_ref import TRT_Llama_Ffn, SimpleFFN
 from baseline.inductor import benchmark_ffn_inductor
 import argparse
 import torch
