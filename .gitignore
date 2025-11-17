@@ -1,3 +1,4 @@
+.gitignore
 __pycache__
 testcase/
 expressions/
@@ -7,12 +8,14 @@ case*
 attac*
 benchmark_results.json
 *.run
-benchmark*
 flash-attention/
-falcon*
-ffn*
 baseline_rms/
-evaluation/
 inductor_env/
 jhpark*
-baseline/
+.vscode/
+*.log
+Trinity
+*.sh
+Training/
+gluon/
+benchmark_*/

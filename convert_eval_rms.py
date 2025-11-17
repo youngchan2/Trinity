@@ -1,31 +1,30 @@
 from convert_module import convert_ir_to_triton
-from ref_rms import Vanila, PreNorm, KeyFormer, QKNorm, RoCo, TensorRT_Vanila, TensorRT_PreNorm, TensorRT_KeyFormer, TensorRT_QKNorm, TensorRT_RoCo, FlashInfer_Vanilla, FlashInfer_PreNorm, FlashInfer_KeyFormer, FlashInfer_QKNorm, FlashInfer_RoCo
 from baseline.inductor import benchmark_rms
 import argparse
 import torch
-import torch.nn.functional as F
-import math
 import importlib.util
 import sys
 
-parser = argparse.ArgumentParser(description="Convert Attacc IR to Triton kernel")
+parser = argparse.ArgumentParser(description="Convert IR to Triton kernel")
 parser.add_argument("--n", type=int, default=0, help="Case number to convert")
 parser.add_argument("--m", type=str, default="llama", help="Input model type")
 parser.add_argument("--t", type=str, default="vanilla", help="RMS Type")
 parser.add_argument("--o", type=int, default=0, help="0 only convert, 1 only test, 2 both convert and test")
+parser.add_argument("--pre", action="store_true", help="Whether to use prenorm or not")
 args = parser.parse_args()
 
 num = args.n
 option = args.o
 model = args.m
 rms = args.t
+pre = args.pre
 device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
 dtype = torch.float16
 
-case_file = f"./evaluation/{rms}/{rms}_{model}_case{num}.txt"
-output_file = f"./evaluation/{rms}/{rms}_{model}_benchmark{num}.py"
-module_name = f"{rms}_{model}_best"
+case_file = f"./evaluation/{rms}/{rms}_{model}_case{num}.txt" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_case{num}.txt"
+output_file = f"./evaluation/{rms}/{rms}_{model}_benchmark{num}.py" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_benchmark{num}.py"
+module_name = f"{rms}_{model}_best" if not pre else f"{rms}_{model}_prenorm_best"
 
 with open(case_file, "r") as f:
     llama_ir = f.read().strip()
@@ -119,48 +118,6 @@ def start_conversion():
     print("=" * 50)
     print("✓ Triton kernel generated successfully!")
 
-def reference_kernel(X, WQ, WK, WV, K_cache, V_cache, M, N, D, H, P):
-    """Reference implementation matching rms_benchmark0.py exactly"""
-    O2 = torch.zeros((M, N), device=X.device, dtype=X.dtype)
-    
-    # Step 1: RMS normalization (without eps, matching TensorRT)
-    variance = X.pow(2).mean(-1, keepdim=True)  # (M, 1)
-    X_norm = X * torch.rsqrt(variance)  # (M, N)
-    
-    # Process each head (block) independently
-    for head_idx in range(H):
-        n_start = head_idx * D
-        n_end = n_start + D
-        
-        # Step 2: QKV projection for this head's dimensions
-        Q1 = torch.matmul(X_norm, WQ[:, n_start:n_end])  # (M, D)
-        K1 = torch.matmul(X_norm, WK[:, n_start:n_end])  # (M, D)
-        V1 = torch.matmul(X_norm, WV[:, n_start:n_end])  # (M, D)
-        
-        # Step 3: Reshape to add head dimension
-        Q = Q1.unsqueeze(0)  # (1, M, D)
-        K = K1.unsqueeze(0)  # (1, M, D)
-        V = V1.unsqueeze(0)  # (1, M, D)
-        
-        # Step 4: Update K/V cache for this head
-        K_cache[head_idx, P:P+M, :] = K.squeeze(0)
-        V_cache[head_idx, P:P+M, :] = V.squeeze(0)
-        
-        # Step 5: Attention computation
-        # Compute attention scores for all positions
-        scores = torch.matmul(Q, K_cache[head_idx, :P+M, :].T)  # (1, M, P+M)
-        
-        # Apply softmax
-        attn_weights = torch.softmax(scores, dim=-1)  # (1, M, P+M)
-        
-        # Apply attention to values
-        O = torch.matmul(attn_weights, V_cache[head_idx, :P+M, :])  # (1, M, D)
-        
-        # Step 6: Store output for this head
-        O2[:, n_start:n_end] = O.squeeze(0)  # (M, D)
-    
-    return O2
-
 def start_test():
     BLOCK_N = 64
     BLOCK_K = 32
@@ -173,17 +130,17 @@ def start_test():
 
     # Use much smaller values to avoid numerical overflow
     std = 0.01
-    X = torch.randn((M, N), device=device, dtype=dtype).clamp(-1,1) * std
+    X = torch.randn((M, N), device=device, dtype=dtype) * std
     X2 = torch.randn(M, device=device, dtype=dtype)
     X_norm = torch.zeros((M, N), device=device, dtype=dtype)
-    WQ = torch.randn((N, N), device=device, dtype=dtype).clamp(-1,1) * std
-    WK = torch.randn((N, N), device=device, dtype=dtype).clamp(-1,1) * std
-    WV = torch.randn((N, N), device=device, dtype=dtype).clamp(-1,1) * std
-    K_cache = torch.randn((H, P+M, D), device=device, dtype=dtype).clamp(-1,1) * std
-    V_cache = torch.randn((H, P+M, D), device=device, dtype=dtype).clamp(-1,1) * std
+    WQ = torch.randn((N, N), device=device, dtype=dtype) * std
+    WK = torch.randn((N, N), device=device, dtype=dtype) * std
+    WV = torch.randn((N, N), device=device, dtype=dtype) * std
+    K_cache = torch.randn((H, P+M, D), device=device, dtype=dtype) * std
+    V_cache = torch.randn((H, P+M, D), device=device, dtype=dtype) * std
     C = torch.zeros((H, M, P), device=device, dtype=dtype)
-    C_exp = torch.zeros((H, M, P+M), device=device, dtype=dtype)
-    C_sum = torch.zeros((H, M), device=device, dtype=dtype)
+    C_exp = torch.zeros((H, M, P+M), device=device, dtype=torch.float32)
+    C_sum = torch.zeros((H, M), device=device, dtype=torch.float32)
     K = torch.zeros((H, M, D), device=device, dtype=dtype)
     K1 = torch.zeros((M, D), device=device, dtype=dtype)
     K2 = torch.zeros((M, H, D), device=device, dtype=dtype)
@@ -196,6 +153,11 @@ def start_test():
     V = torch.zeros((H, M, D), device=device, dtype=dtype)
     V1 = torch.zeros((M, D), device=device, dtype=dtype)
     V2 = torch.zeros((M, H, D), device=device, dtype=dtype)
+
+    # Gradient
+    dWQ = torch.zeros((N, N), device=device, dtype=dtype)
+    dWK = torch.zeros((N, N), device=device, dtype=dtype)
+    dWV = torch.zeros((N, N), device=device, dtype=dtype)
 
     # Key Former
     noise = torch.randn((H, M, P+M), device=device, dtype=dtype)
@@ -252,6 +214,10 @@ def start_test():
         'V': V,
         'V1': V1,
         'V2': V2,
+
+        'dWQ': dWQ,
+        'dWK': dWK,
+        'dWV': dWV,
 
         'noise': noise,
         'C_perturb': C_perturb,
@@ -314,25 +280,48 @@ def start_test():
 
     match rms:
         case "vanilla":
-            trt = TensorRT_Vanila(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-            ti = Vanila(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            from baseline.ref_rms import Vanilla, TensorRT_Vanilla, FlashInfer_Vanilla
+            trt = TensorRT_Vanilla(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
+            ti = Vanilla(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
             fi = FlashInfer_Vanilla(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
         case "prenorm":
+            from baseline.ref_rms import PreNorm, TensorRT_PreNorm, FlashInfer_PreNorm
             trt = TensorRT_PreNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
             ti = PreNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
             fi = FlashInfer_PreNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
         case "keyformer":
-            trt = TensorRT_KeyFormer(M, N, D, H, K_cache.clone(), V_cache.clone(), P, noise, WQ, WK, WV)
-            ti = KeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-            fi = FlashInfer_KeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            if pre:
+                from baseline.ref_rms import NormKeyFormer, TensorRT_NormKeyFormer, FlashInfer_NormKeyFormer
+                trt = TensorRT_NormKeyFormer(M, N, D, H, K_cache.clone(), V_cache.clone(), P, noise, WQ, WK, WV)
+                ti = NormKeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+                fi = FlashInfer_NormKeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            else:
+                from baseline.ref_rms import KeyFormer, TensorRT_KeyFormer, FlashInfer_KeyFormer
+                trt = TensorRT_KeyFormer(M, N, D, H, K_cache.clone(), V_cache.clone(), P, noise, WQ, WK, WV)
+                ti = KeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+                fi = FlashInfer_KeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
         case "qknorm":
-            trt = TensorRT_QKNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-            ti = QKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-            fi = FlashInfer_QKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            if pre:
+                from baseline.ref_rms import NormQKNorm, TensorRT_NormQKNorm, FlashInfer_NormQKNorm
+                trt = TensorRT_NormQKNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
+                ti = NormQKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+                fi = FlashInfer_NormQKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            else:
+                from baseline.ref_rms import QKNorm, TensorRT_QKNorm, FlashInfer_QKNorm
+                trt = TensorRT_QKNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
+                ti = QKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+                fi = FlashInfer_QKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
         case "roco":
-            trt = TensorRT_RoCo(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-            ti = RoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-            fi = FlashInfer_RoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            if pre:
+                from baseline.ref_rms import NormRoCo, TensorRT_NormRoCo, FlashInfer_NormRoCo
+                trt = TensorRT_NormRoCo(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
+                ti = NormRoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+                fi = FlashInfer_NormRoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+            else:
+                from baseline.ref_rms import RoCo, TensorRT_RoCo, FlashInfer_RoCo
+                trt = TensorRT_RoCo(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
+                ti = RoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
+                fi = FlashInfer_RoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
 
     print("=" * 50)
     print("Starting ref kernel execution...")
@@ -381,19 +370,19 @@ def start_test():
         print(f"TRT: {rt_time}ms")
     print(out)
 
-    # ------------------- Torch Inductor -------------------
+    # # ------------------- Torch Inductor -------------------
     print("\nTesting Torch Inductor Implementation...")
 
     benchmark_rms(ti.eval(), X)
     
-    # print("\nComparing results...")
-    # if torch.allclose(O2, out, rtol=1e-3, atol=1e-4):
-    #     print("✓ Results match!")
-    # else:
-    #     print("✗ Results do not match!")
-    #     max_diff = torch.abs(O2 - out).max()
-    #     print(f"Maximum difference: {max_diff}")
-    # print("=" * 50)
+    print("\nComparing results...")
+    if torch.allclose(O2, out, rtol=1e-3, atol=1e-4):
+        print("✓ Results match!")
+    else:
+        print("✗ Results do not match!")
+        max_diff = torch.abs(O2 - out).max()
+        print(f"Maximum difference: {max_diff}")
+    print("=" * 50)
 
 print(f"[Case{num}]")
 if option == 0:

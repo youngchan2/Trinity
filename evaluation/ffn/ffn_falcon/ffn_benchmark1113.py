@@ -1,0 +1,91 @@
+import triton
+import triton.language as tl
+import torch
+
+@triton.autotune(
+    configs = [
+        triton.Config({'BLOCK_N': 32, 'BLOCK_K': 32}),
+        triton.Config({'BLOCK_N': 32, 'BLOCK_K': 64}),
+        triton.Config({'BLOCK_N': 32, 'BLOCK_K': 128}),
+        triton.Config({'BLOCK_N': 64, 'BLOCK_K': 32}),
+        triton.Config({'BLOCK_N': 64, 'BLOCK_K': 64}),
+        triton.Config({'BLOCK_N': 64, 'BLOCK_K': 128}),
+        triton.Config({'BLOCK_N': 128, 'BLOCK_K': 32}),
+        triton.Config({'BLOCK_N': 128, 'BLOCK_K': 64}),
+        triton.Config({'BLOCK_N': 128, 'BLOCK_K': 128})
+    ], key=[]
+)
+@triton.jit
+def kernel_0(
+    FF1_ptr,
+    FF1_stride0: tl.constexpr,
+    FF1_stride1: tl.constexpr,
+    O_FF_ptr,
+    O_FF_stride0: tl.constexpr,
+    O_FF_stride1: tl.constexpr,
+    WFF2_ptr,
+    WFF2_stride0: tl.constexpr,
+    WFF2_stride1: tl.constexpr,
+    attn_O_norm_ptr,
+    attn_O_norm_stride0: tl.constexpr,
+    attn_O_norm_stride1: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    K: tl.constexpr,
+    M: tl.constexpr,
+    N: tl.constexpr
+):
+    # Allocate intermediate tensors
+    FF2 = tl.zeros((M, BLOCK_N), dtype=tl.float16)
+
+    # Parallel loop n from 0 to FF2_dim1 with tile size BLOCK_N
+    # Executed across grid dimension 0
+    n = 0 + tl.program_id(0) * BLOCK_N
+    
+    # Sequential loop k from 0 to 4544 with tile size BLOCK_K
+    for k in range(0, 4544, BLOCK_K):
+        offset_0 = (tl.arange(0, M))[:, None] * FF1_stride0 + (k + tl.arange(0, BLOCK_K))[None, :] * FF1_stride1
+        temp_0 = tl.load(FF1_ptr + offset_0)
+        offset_1 = (k + tl.arange(0, BLOCK_K))[:, None] * WFF2_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WFF2_stride1
+        temp_1 = tl.load(WFF2_ptr + offset_1)
+        FF2 = ((1 * FF2).to(tl.float16) + tl.dot(temp_0, temp_1).to(tl.float16)).to(tl.float16)
+    offset_2 = (tl.arange(0, M))[:, None] * attn_O_norm_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * attn_O_norm_stride1
+    temp_2 = tl.load(attn_O_norm_ptr + offset_2)
+    offset_3 = (tl.arange(0, M))[:, None] * O_FF_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * O_FF_stride1
+    tl.store(O_FF_ptr + offset_3, (temp_2 + FF2).to(tl.float16))
+
+
+# Metadata for benchmark.py
+TENSOR_PARAMS = ['FF1', 'O_FF', 'WFF2', 'attn_O_norm']
+BLOCK_PARAMS = ['block_k', 'block_n']
+
+def forward(FF1, O_FF, WFF2, attn_O_norm, block_k=16, block_n=16):
+    """
+    Wrapper function that executes all kernels sequentially.
+    """
+    # Launch kernel_0
+    grid = ((4544 - 0 + block_n - 1) // block_n,)
+    kernel_0[grid](
+        FF1,
+        FF1.stride(0),
+        FF1.stride(1),
+        O_FF,
+        O_FF.stride(0),
+        O_FF.stride(1),
+        WFF2,
+        WFF2.stride(0),
+        WFF2.stride(1),
+        attn_O_norm,
+        attn_O_norm.stride(0),
+        attn_O_norm.stride(1),
+        # BLOCK_K, BLOCK_N are provided by autotune,
+        # BLOCK_N is automatically set by autotune,
+        # BLOCK_K is automatically set by autotune,
+        K=4544,
+        M=16,
+        N=4544
+    )
+
+    # Return output tensors if needed
+    # This depends on your specific use case
+    pass
