@@ -489,7 +489,6 @@ import torch
             
             # Identify accumulators
             accumulators = self._identify_accumulators(op)
-            print(f"@@ {accumulators}")
             # Identify cross-sloop tensors
             cross_sloop_tensors = self._identify_cross_sloop_tensors(op)
             
@@ -2766,7 +2765,6 @@ def {kernel_name}(
             else:
                 # Regular accumulator behavior - skip store
                 skip_this_store = True
-            print(f"$ {tensor_name} {skip_this_store}")
         
         if skip_this_store:
             
@@ -2954,7 +2952,6 @@ def {kernel_name}(
             
             # Mark this accumulator as stored if it's in a loop
             if tensor_name in self.kernel_accumulators and hasattr(self, 'current_sloop_info') and self.current_sloop_info:
-                print(f"! {tensor_name}")
                 self.stored_accumulators.add(tensor_name)
             offset_expr = self._generate_index(index_node, tensor_name)
             
@@ -3016,7 +3013,6 @@ def {kernel_name}(
                             code += f"{indent_str}{tensor_name} = {value_expr}"
                     else:
                         # Regular addition but not accumulation pattern
-                        # print(f"? { tensor_name}")
                         code += f"{indent_str}{tensor_name} = {value_expr}"
                 else:
                     # Direct assignment for non-accumulation patterns
@@ -3963,7 +3959,6 @@ def {kernel_name}(
                 # Get the permuted dimension order
                 perm_dims = child.permute_dims  # e.g., (1, 0, 2)
                 shape_parts = []
-                print(f"5. {perm_dims}")
                 # Build shape from source tensor dimensions, excluding squeezed dim
                 for i in range(len(perm_dims)):
                     if i != int(dim):  # Skip the dimension to be squeezed
@@ -3998,7 +3993,6 @@ def {kernel_name}(
             
             # Pass shape directly as tuple to tl.reshape
             shape_tuple = f"({', '.join(shape_parts)})"
-            print(f"4. {tensor_expr}")
             code += f"{indent}{temp_var} = tl.reshape({tensor_expr}, {shape_tuple})\n"
         else:
             # Fallback: simple assignment with comment
