@@ -8,9 +8,9 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
-from IrParser import IRParser
-from AstNode import ASTNode
-from NodeType import NodeType
+from codegen.IrParser import IRParser
+from codegen.AstNode import ASTNode
+from codegen.NodeType import NodeType
 from gradient_rules import GradientRuleTable, GradientContext, clone_ast
 from dataclasses import dataclass
 from typing import Dict, List, Set, Optional
@@ -307,6 +307,10 @@ class BackwardIRGenerator:
             if self._is_weight_gradient(target_name):
                 inner = self._make_loop(0, 4544, 'tile_k', 'k', op_clone)
                 wrapped = self._make_loop(0, 4544, 'tile_n', 'n', inner)
+            elif self._uses_only_elem_n(op_clone):
+                # Convert elem n to tile h and use head loop
+                op_converted = self._replace_elem_n_with_tile_h(op_clone)
+                wrapped = self._make_loop(0, 71, 'tile_h', 'h', op_converted)
             else:
                 wrapped = self._make_loop(0, 4544, 'tile_n', 'n', op_clone)
 
@@ -406,16 +410,28 @@ class BackwardIRGenerator:
 
             return outer
         else:
-            # Single loop (n dimension only)
-            n_bounds = loop_bounds.get('n', (0, 4544, 64, 'n'))
+            # Check if operation uses only elem n (not tile n)
+            if self._uses_only_elem_n(store_op):
+                # Convert to head loop
+                store_op_converted = self._replace_elem_n_with_tile_h(store_op)
+                return ASTNode(NodeType.LOOP, [
+                    ASTNode(NodeType.NUM, [], 0),
+                    ASTNode(NodeType.NUM, [], 71),
+                    ASTNode(NodeType.VAR, [], 'tile_h'),
+                    ASTNode(NodeType.VAR, [], 'h'),
+                    store_op_converted
+                ])
+            else:
+                # Single loop (n dimension only)
+                n_bounds = loop_bounds.get('n', (0, 4544, 64, 'n'))
 
-            return ASTNode(NodeType.LOOP, [
-                ASTNode(NodeType.NUM, [], n_bounds[0]),
-                ASTNode(NodeType.NUM, [], n_bounds[1]),
-                ASTNode(NodeType.VAR, [], n_bounds[2] if isinstance(n_bounds[2], str) else 'tile_n'),
-                ASTNode(NodeType.VAR, [], n_bounds[3]),
-                store_op
-            ])
+                return ASTNode(NodeType.LOOP, [
+                    ASTNode(NodeType.NUM, [], n_bounds[0]),
+                    ASTNode(NodeType.NUM, [], n_bounds[1]),
+                    ASTNode(NodeType.VAR, [], n_bounds[2] if isinstance(n_bounds[2], str) else 'tile_n'),
+                    ASTNode(NodeType.VAR, [], n_bounds[3]),
+                    store_op
+                ])
 
     def _has_matmul(self, node: ASTNode) -> bool:
         """Check if node contains a matmul operation"""
@@ -685,6 +701,52 @@ class BackwardIRGenerator:
             return False
         names = [name.strip() for name in target_name.split(',') if name.strip()]
         return bool(names) and all(name.startswith('dW') for name in names)
+
+    def _uses_only_elem_n(self, node: ASTNode) -> bool:
+        """Check if node uses only elem n (not tile n)"""
+        uses_elem_n = False
+        uses_tile_n = False
+
+        def check_node(n: ASTNode):
+            nonlocal uses_elem_n, uses_tile_n
+
+            if n.node_type == NodeType.INDEX:
+                for child in n.children:
+                    if isinstance(child, ASTNode):
+                        # Check for (elem n) or (tile n)
+                        if child.node_type == NodeType.ELEM:
+                            if child.children and child.children[0].node_type == NodeType.VAR:
+                                if child.children[0].value == 'n':
+                                    uses_elem_n = True
+                        elif child.node_type == NodeType.TILE:
+                            if child.children and child.children[0].node_type == NodeType.VAR:
+                                if child.children[0].value == 'n':
+                                    uses_tile_n = True
+
+            for child in n.children:
+                if isinstance(child, ASTNode):
+                    check_node(child)
+
+        check_node(node)
+        return uses_elem_n and not uses_tile_n
+
+    def _replace_elem_n_with_tile_h(self, node: ASTNode) -> ASTNode:
+        """Replace (elem n) with (tile h) in the AST"""
+        if node.node_type == NodeType.ELEM:
+            if node.children and node.children[0].node_type == NodeType.VAR:
+                if node.children[0].value == 'n':
+                    # Replace (elem n) with (tile h)
+                    return ASTNode(NodeType.TILE, [ASTNode(NodeType.VAR, [], 'h')])
+
+        # Recursively process children
+        new_children = []
+        for child in node.children:
+            if isinstance(child, ASTNode):
+                new_children.append(self._replace_elem_n_with_tile_h(child))
+            else:
+                new_children.append(child)
+
+        return ASTNode(node.node_type, new_children, node.value)
 
     def _gradient_name(self, name: str) -> str:
         if name.startswith('d'):

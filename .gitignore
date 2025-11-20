@@ -1,4 +1,11 @@
+.gitignore
 .claude/
 .vscode/
 *.txt
 CLAUDE.md
+COMMIT_MESSAGE_GUIDE.md
+discord_webhook_guide.md
+src_backup/
+*.sh
+etc/
+Inference/

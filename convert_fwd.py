@@ -1,4 +1,5 @@
-from convert_module import convert_ir_to_triton
+from codegen.convert_module import convert_ir_to_triton
+from utils.shapes import get_forward_shape_dict
 # from baseline.inductor import benchmark_rms
 import argparse
 import torch
@@ -22,8 +23,8 @@ device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
 dtype = torch.float32
 
-case_file = f"./Training/seq16_fwd{num}.txt"
-output_file = f"./Training/seq16_fwd{num}.py"
+case_file = f"./seq16_fwd{num}.txt"
+output_file = f"./seq16_fwd{num}.py"
 module_name = f"{rms}_{model}_best" if not pre else f"{rms}_{model}_prenorm_best"
 
 with open(case_file, "r") as f:
@@ -58,53 +59,8 @@ elif model == "llama":
         'H': 32
     }
 
-tensor_shapes = {
-            'X': ('M', 'N'),
-            'X2': ('M', ),
-            'X_norm': ('M', 'N'),
-            
-            'WQ': ('N', 'N'),
-            'WK': ('N', 'N'),
-            'WV': ('N', 'N'),
-
-            'Q': ('H', 'M', 'D'),
-            'K': ('H', 'M', 'D'),
-            'V': ('H', 'M', 'D'),
-
-            'Q1': ('M', 'N'),
-            'K1': ('M', 'N'),
-            'V1': ('M', 'N'),
-
-            'Q2': ('M', 'H', 'D'),
-            'K2': ('M', 'H', 'D'),
-            'V2': ('M', 'H', 'D'),
-
-            'K_cache': ('H', 'P+M', 'D'),
-            'V_cache': ('H', 'P+M', 'D'),
-
-            'K': ('H', 'M', 'D'),
-            'V': ('H', 'M', 'D'),
-
-            'O': ('H', 'M', 'D'),
-            'O1': ('M', 'H', 'D'),
-            'O2': ('M', 'N'),
-
-            'C': ('H', 'M', 'M'),
-            'C_exp': ('H', 'M', 'M'),
-            'C_div': ('H', 'M', 'M'),
-            'C_sum': ('H', 'M'),
-            # 'noise': ('H', 'M', 'P+M'),
-            # 'C_perturb': ('H', 'M', 'P+M'),
-            # 'C_exp_perturb': ('H', 'M', 'P+M'),
-            # 'C_sum_perturb': ('H', 'M', 'P+M'),
-            # 'C_div_perturb': ('H', 'M', 'P+M'),
-            # 'C_out': ('H', 'P+M'),
-            # 'C_out1': ('H', 'P+M'),
-            # 'C_out2': ('H', 'P+M'),
-
-            # 'Q_norm': ('H', 'M', 'D'),
-            # 'K_norm': ('H', 'M', 'D')
-        }
+# Get forward tensor shapes from utils
+tensor_shapes = get_forward_shape_dict()
 
 # Convert IR to Triton kernel
 def start_conversion():

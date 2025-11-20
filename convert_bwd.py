@@ -1,4 +1,5 @@
-from convert_module import convert_ir_to_triton
+from codegen.convert_module import convert_ir_to_triton
+from utils.shapes import get_backward_shape_dict
 # from baseline.inductor import benchmark_rms
 import argparse
 import torch
@@ -6,32 +7,37 @@ import importlib.util
 import sys
 
 parser = argparse.ArgumentParser(description="Convert IR to Triton kernel")
-parser.add_argument("--n", type=int, default=0, help="Case number to convert")
+parser.add_argument("--n", type=int, default=0, help="BWD Case number to convert")
 parser.add_argument("--m", type=str, default="falcon", help="Input model type")
+parser.add_argument("--c", type=int, help="BWD List case number")
 # parser.add_argument("--t", type=str, default="vanilla", help="RMS Type")
 parser.add_argument("--o", type=int, default=0, help="0 only convert, 1 only test, 2 both convert and test")
 # parser.add_argument("--pre", action="store_true", help="Whether to use prenorm or not")
 args = parser.parse_args()
 
 num = args.n
+list_case = args.c
 option = args.o
 model = args.m
 # rms = args.t
 # pre = args.pre
-device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
 dtype = torch.float32
 
-# case_file = f"./evaluation/{rms}/{rms}_{model}_case{num}.txt" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_case{num}.txt"
-# output_file = f"./evaluation/{rms}/{rms}_{model}_benchmark{num}.py" if not pre else f"./evaluation/{rms}/{rms}_{model}_prenorm_benchmark{num}.py"
-# module_name = f"{rms}_{model}_best" if not pre else f"{rms}_{model}_prenorm_best"
+fwd_file = f"/home/chani227/Trinity/CodeGen/Training/seq16_fwd{list_case}.txt"
+fwd_output = f"/home/chani227/Trinity/CodeGen/Training/seq16_fwd{list_case}.py"
+fwd_name = f"forward_{num}"
 
-case_file = f"./evaluation/backward/backward_case{num}.txt"
-output_file = f"./evaluation/backward/backward_benchmark{num}.py"
-module_name = f"backward_{num}"
+bwd_file = f"/home/chani227/Trinity/evaluation/backward/seq16_bwd{list_case}_case{num}.txt"
+bwd_output = f"/home/chani227/Trinity/evaluation/backward/seq16_{list_case}benchmark{num}.py"
+bwd_name = f"backward_{num}"
 
-with open(case_file, "r") as f:
-    llama_ir = f.read().strip()
+with open(fwd_file, "r") as f:
+    fwd_ir = f.read().strip()
+
+with open(bwd_file, "r") as f:
+    bwd_ir = f.read().strip()
 
 if model == "falcon":
     M = 16
@@ -62,77 +68,21 @@ elif model == "llama":
         'H': 32
     }
 
-tensor_shapes = {
-            'X': ('M', 'N'),
-            'X2': ('M', ),
-            'X_norm': ('M', 'N'),
-            
-            'WQ': ('N', 'N'),
-            'WK': ('N', 'N'),
-            'WV': ('N', 'N'),
-            'dWQ': ('N', 'N'),
-            'dWK': ('N', 'N'),
-            'dWV': ('N', 'N'),
-
-            'Q': ('H', 'M', 'D'),
-            'K': ('H', 'M', 'D'),
-            'V': ('H', 'M', 'D'),
-            'dQ': ('H', 'M', 'D'),
-            'dK': ('H', 'M', 'D'),
-            'dV': ('H', 'M', 'D'),
-
-            'Q1': ('M', 'N'),
-            'K1': ('M', 'N'),
-            'V1': ('M', 'N'),
-            'dQ1': ('M', 'N'),
-            'dK1': ('M', 'N'),
-            'dV1': ('M', 'N'),
-
-            'Q2': ('M', 'H', 'D'),
-            'K2': ('M', 'H', 'D'),
-            'V2': ('M', 'H', 'D'),
-
-            'K_cache': ('H', 'P+M', 'D'),
-            'V_cache': ('H', 'P+M', 'D'),
-
-            'K': ('H', 'M', 'D'),
-            'V': ('H', 'M', 'D'),
-
-            'O': ('H', 'M', 'D'),
-            'dO': ('H', 'M', 'D'),
-            'dO_tmp': ('H', 'M', 'D'),
-            'O1': ('M', 'H', 'D'),
-            'O2': ('M', 'N'),
-            'dO2': ('M', 'N'),
-
-            'C': ('H', 'M', 'M'),
-            'dC': ('H', 'M', 'M'),
-            'C_exp': ('H', 'M', 'M'),
-            'dC_exp': ('H', 'M', 'M'),
-            'C_div': ('H', 'M', 'M'),
-            'C_sum': ('H', 'M'),
-            'dC_sum': ('H', 'M'),
-            'noise': ('H', 'M', 'P+M'),
-            'C_perturb': ('H', 'M', 'P+M'),
-            'C_exp_perturb': ('H', 'M', 'P+M'),
-            'C_sum_perturb': ('H', 'M', 'P+M'),
-            'C_div_perturb': ('H', 'M', 'P+M'),
-            'C_out': ('H', 'P+M'),
-            'C_out1': ('H', 'P+M'),
-            'C_out2': ('H', 'P+M'),
-
-            'Q_norm': ('H', 'M', 'D'),
-            'K_norm': ('H', 'M', 'D')
-        }
+# Get backward tensor shapes from utils
+tensor_shapes = get_backward_shape_dict()
 
 # Convert IR to Triton kernel
 def start_conversion():
 
-    triton_code = convert_ir_to_triton(llama_ir, tensor_shapes, constants)
+    fwd_code = convert_ir_to_triton(fwd_ir, tensor_shapes, constants)
+    bwd_code = convert_ir_to_triton(bwd_ir, tensor_shapes, constants)
 
     # Save the generated kernel
-    with open(output_file, "w") as f:
-        f.write(triton_code)
+    with open(fwd_output, "w") as f:
+        f.write(fwd_code)
+
+    with open(bwd_output, "w") as f:
+        f.write(bwd_code)
 
     print("=" * 50)
     print("✓ Triton kernel generated successfully!")
@@ -183,6 +133,7 @@ def start_test():
     dO_tmp = torch.zeros((H, M, D), device=device, dtype=dtype)
     dC_exp = torch.zeros((H, M, M), device=device, dtype=dtype)
     dC_sum = torch.zeros((H, M), device=device, dtype=dtype)
+    dC = torch.zeros((H, M, M), dtype=dtype, device=device)
 
     dQ = torch.zeros((H, M, D), device=device, dtype=dtype)
     dK = torch.zeros((H, M, D), device=device, dtype=dtype)
@@ -213,14 +164,23 @@ def start_test():
     print("=" * 50)
     print("Starting kernel execution...")
 
-    spec = importlib.util.spec_from_file_location(module_name, output_file)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    forward = getattr(module, "forward")
+    fwd_spec = importlib.util.spec_from_file_location(fwd_name, fwd_output)
+    fwd_module = importlib.util.module_from_spec(fwd_spec)
+    sys.modules[fwd_name] = fwd_module
+    fwd_spec.loader.exec_module(fwd_module)
+    forward = getattr(fwd_module, "forward")
 
-    tensor_params = getattr(module, 'TENSOR_PARAMS')
-    block_params = getattr(module, 'BLOCK_PARAMS')
+    fwd_tensor_params = getattr(fwd_module, 'TENSOR_PARAMS')
+    fwd_block_params = getattr(fwd_module, 'BLOCK_PARAMS')
+
+    bwd_spec = importlib.util.spec_from_file_location(bwd_name, bwd_output)
+    bwd_module = importlib.util.module_from_spec(bwd_spec)
+    sys.modules[bwd_name] = bwd_module
+    bwd_spec.loader.exec_module(bwd_module)
+    backward = getattr(bwd_module, "forward")
+
+    bwd_tensor_params = getattr(bwd_module, 'TENSOR_PARAMS')
+    bwd_block_params = getattr(bwd_module, 'BLOCK_PARAMS')
 
     tensors = {
         'X': X,
@@ -253,6 +213,7 @@ def start_test():
         'dO2': dO2,
         'dO': dO,
         'dO_tmp': dO_tmp,
+        'dC': dC,
         'dC_exp': dC_exp,
         'dC_sum': dC_sum,
         'dQ': dQ,
@@ -282,29 +243,43 @@ def start_test():
         'block_p': BLOCK_P
     }
 
-    args = []
-    for param in tensor_params:
+    fwd_args = []
+    for param in fwd_tensor_params:
         if param in tensors:
-            args.append(tensors[param])
+            fwd_args.append(tensors[param])
         else:
             raise ValueError(f"Unknown tensor parameter: {param}")
-    for param in block_params:
+    for param in fwd_block_params:
         if param in blocks:
-            args.append(blocks[param])
+            fwd_args.append(blocks[param])
         else:
             raise ValueError(f"Unknown tensor parameter: {param}")
 
-    # ------------------- Tile -------------------
+    bwd_args = []
+    for param in bwd_tensor_params:
+        if param in tensors:
+            bwd_args.append(tensors[param])
+        else:
+            raise ValueError(f"Unknown tensor parameter: {param}")
+    for param in bwd_block_params:
+        if param in blocks:
+            bwd_args.append(blocks[param])
+        else:
+            raise ValueError(f"Unknown tensor parameter: {param}")
+
+    forward(*fwd_args)
+    print(Q1)
+    # ------------------- Check Only BWD -------------------
     stream = torch.cuda.Stream(device)
     with torch.cuda.stream(stream):
         for _ in range(10):
-            forward(*args)
+            backward(*bwd_args)
     stream.synchronize()
 
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.stream(stream):
         with torch.cuda.graph(graph, stream=stream):
-            forward(*args)
+            backward(*bwd_args)
     stream.synchronize()
 
     start_rms = torch.cuda.Event(enable_timing=True)
@@ -329,11 +304,11 @@ def start_test():
     # Compare with PyTorch reference
     print("=" * 50)
     print("Computing PyTorch reference...")
-    from ref_backward import compute_gradients
+    from ref.ref_backward import compute_gradients
 
     # Warmup for PyTorch
     for _ in range(10):
-        ref_dWQ, ref_dWK, ref_dWV = compute_gradients(M, N, D, H, X.clone(), WQ.clone(), WK.clone(), WV.clone(), dO2.clone(), device, dtype)
+        ref_dWQ, ref_dWK, ref_dWV, Q1_ret = compute_gradients(M, N, D, H, X.clone(), WQ.clone(), WK.clone(), WV.clone(), dO2.clone(), device, dtype)
     torch.cuda.synchronize()
 
     # Time measurement for PyTorch
@@ -342,10 +317,11 @@ def start_test():
 
     start_torch.record()
     for _ in range(100):
-        ref_dWQ, ref_dWK, ref_dWV = compute_gradients(M, N, D, H, X.clone(), WQ.clone(), WK.clone(), WV.clone(), dO2.clone(), device, dtype)
+        ref_dWQ, ref_dWK, ref_dWV, Q1_ret = compute_gradients(M, N, D, H, X.clone(), WQ.clone(), WK.clone(), WV.clone(), dO2.clone(), device, dtype)
     end_torch.record()
     torch.cuda.synchronize()
-
+    print("ret")
+    print(Q1_ret)
     torch_time = start_torch.elapsed_time(end_torch) / 100
     print(f"PyTorch execution completed!: {torch_time}ms")
 
@@ -370,112 +346,6 @@ def start_test():
     print(f"PyTorch: {torch_time:.4f}ms")
     print(f"Speedup: {torch_time/time:.2f}x")
     print("=" * 50)
-
-    # match rms:
-    #     case "vanilla":
-    #         from ref_rms import Vanilla, TensorRT_Vanilla, FlashInfer_Vanilla
-    #         trt = TensorRT_Vanilla(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-    #         ti = Vanilla(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #         fi = FlashInfer_Vanilla(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #     case "prenorm":
-    #         from ref_rms import PreNorm, TensorRT_PreNorm, FlashInfer_PreNorm
-    #         trt = TensorRT_PreNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-    #         ti = PreNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #         fi = FlashInfer_PreNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #     case "keyformer":
-    #         if pre:
-    #             from ref_rms import NormKeyFormer, TensorRT_NormKeyFormer, FlashInfer_NormKeyFormer
-    #             trt = TensorRT_NormKeyFormer(M, N, D, H, K_cache.clone(), V_cache.clone(), P, noise, WQ, WK, WV)
-    #             ti = NormKeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #             fi = FlashInfer_NormKeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #         else:
-    #             from ref_rms import KeyFormer, TensorRT_KeyFormer, FlashInfer_KeyFormer
-    #             trt = TensorRT_KeyFormer(M, N, D, H, K_cache.clone(), V_cache.clone(), P, noise, WQ, WK, WV)
-    #             ti = KeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #             fi = FlashInfer_KeyFormer(M, N, D, P, noise, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #     case "qknorm":
-    #         if pre:
-    #             from ref_rms import NormQKNorm, TensorRT_NormQKNorm, FlashInfer_NormQKNorm
-    #             trt = TensorRT_NormQKNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-    #             ti = NormQKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #             fi = FlashInfer_NormQKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #         else:
-    #             from ref_rms import QKNorm, TensorRT_QKNorm, FlashInfer_QKNorm
-    #             trt = TensorRT_QKNorm(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-    #             ti = QKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #             fi = FlashInfer_QKNorm(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #     case "roco":
-    #         if pre:
-    #             from ref_rms import NormRoCo, TensorRT_NormRoCo, FlashInfer_NormRoCo
-    #             trt = TensorRT_NormRoCo(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-    #             ti = NormRoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #             fi = FlashInfer_NormRoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #         else:
-    #             from ref_rms import RoCo, TensorRT_RoCo, FlashInfer_RoCo
-    #             trt = TensorRT_RoCo(M, N, D, H, K_cache.clone(), V_cache.clone(), P, WQ, WK, WV)
-    #             ti = RoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-    #             fi = FlashInfer_RoCo(M, N, D, P, K_cache.clone(), V_cache.clone(), WQ, WK, WV)
-
-    # print("=" * 50)
-    # print("Starting ref kernel execution...")
-    # print(f"\nTesting {rms.upper()} Flash Infer...")
-    # print("\nTesting Correct Flash Infer...")
-    # # ------------------- Flash Infer -------------------
-    # fi.half()
-    # with torch.no_grad():
-    #     for _ in range(10):
-    #         out = fi(X)
-    #     torch.cuda.synchronize()
-
-    #     start_fi = torch.cuda.Event(enable_timing=True)
-    #     end_fi = torch.cuda.Event(enable_timing=True)
-
-    #     start_fi.record()
-    #     for _ in range(ITER):
-    #         out = fi(X)
-    #     end_fi.record()
-    #     torch.cuda.synchronize()
-    #     fi_time = start_fi.elapsed_time(end_fi) / ITER
-    #     print(f"FI: {fi_time}ms")
-    # print(out)
-
-
-    # print("=" * 50)
-    # print(f"\nTesting {rms.upper()} TensorRT...")
-    # print("\nTesting Correct TensorRT...")
-    # # ------------------- Tensor RT -------------------
-    
-    # trt.half()
-    # with torch.no_grad():
-    #     for _ in range(10):
-    #         out = trt(X)
-    #     torch.cuda.synchronize()
-
-    #     start_rt = torch.cuda.Event(enable_timing=True)
-    #     end_rt = torch.cuda.Event(enable_timing=True)
-
-    #     start_rt.record()
-    #     for _ in range(ITER):
-    #         out = trt(X)
-    #     end_rt.record()
-    #     torch.cuda.synchronize()
-    #     rt_time = start_rt.elapsed_time(end_rt) / ITER
-    #     print(f"TRT: {rt_time}ms")
-    # print(out)
-
-    # # ------------------- Torch Inductor -------------------
-    # print("\nTesting Torch Inductor Implementation...")
-
-    # benchmark_rms(ti.eval(), X)
-    
-    # print("\nComparing results...")
-    # if torch.allclose(O2, out, rtol=1e-3, atol=1e-4):
-    #     print("✓ Results match!")
-    # else:
-    #     print("✗ Results do not match!")
-    #     max_diff = torch.abs(O2 - out).max()
-    #     print(f"Maximum difference: {max_diff}")
-    # print("=" * 50)
 
 print(f"[Case{num}]")
 if option == 0:

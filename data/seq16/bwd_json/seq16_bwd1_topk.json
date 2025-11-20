@@ -1,0 +1,67 @@
+[
+  {
+    "rank": 1,
+    "ir_id": 49,
+    "execution_time_ms": 0.4482662582397461,
+    "tensor_config": {
+      "M": 16,
+      "D": 64,
+      "N": 4544,
+      "P": 1024,
+      "H": 71
+    },
+    "ir_expression": "(ploop 0 4544 64 n (seq (store (tensor Q,K,V) (permute3 (unsqueeze (load (tensor Q1,K1,V1) (index fulltile (tile n))) 1) 1 0 2) (index (elem n) fulltile fulltile)) (seq (store (tensor C_exp) (exp (* (load (tensor Q) (index (elem n) fulltile fulltile)) (permute3 (load (tensor K) (index (elem n) fulltile fulltile)) 0 2 1))) (index (elem n) fulltile fulltile)) (seq (store (tensor dC_exp) (+ (/ (* (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2) (permute3 (load (tensor V) (index (elem n) fulltile fulltile)) 0 2 1)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (load (tensor dC_exp) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dV) (* (/ (load (tensor C_exp) (index (elem n) fulltile fulltile)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2)) (index (elem n) fulltile fulltile)) (seq (store (tensor dC) (+ (x (load (tensor C_exp) (index (elem n) fulltile fulltile)) (load (tensor dC_exp) (index (elem n) fulltile fulltile))) (load (tensor dC) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ) (+ (* (load (tensor dC) (index (elem n) fulltile fulltile)) (load (tensor K) (index (elem n) fulltile fulltile))) (load (tensor dQ) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dK) (+ (load (tensor dK) (index (elem n) fulltile fulltile)) (* (permute3 (load (tensor dC) (index (elem n) fulltile fulltile)) 0 2 1) (load (tensor Q) (index (elem n) fulltile fulltile)))) (index (elem n) fulltile fulltile)) (seq (sloop 0 4544 tile_k k (seq (store (tensor dQ1,dK1,dV1) (squeeze (permute3 (load (tensor dQ,dK,dV) (index (elem n) fulltile fulltile)) 1 0 2) 1) (index fulltile (tile n))) (store (output dWV) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dV1) (index fulltile (tile n)))) (index (tile k) (tile n))))) (seq (sloop 0 4544 tile_k k (store (output dWQ) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dQ1) (index fulltile (tile n)))) (index (tile k) (tile n)))) (sloop 0 4544 tile_k k (store (output dWK) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dK1) (index fulltile (tile n)))) (index (tile k) (tile n))))))))))))))"
+  },
+  {
+    "rank": 2,
+    "ir_id": 41,
+    "execution_time_ms": 0.4485932922363281,
+    "tensor_config": {
+      "M": 16,
+      "D": 64,
+      "N": 4544,
+      "P": 1024,
+      "H": 71
+    },
+    "ir_expression": "(ploop 0 4544 64 n (seq (store (tensor Q,K,V) (permute3 (unsqueeze (load (tensor Q1,K1,V1) (index fulltile (tile n))) 1) 1 0 2) (index (elem n) fulltile fulltile)) (seq (store (tensor C_exp) (exp (* (load (tensor Q) (index (elem n) fulltile fulltile)) (permute3 (load (tensor K) (index (elem n) fulltile fulltile)) 0 2 1))) (index (elem n) fulltile fulltile)) (seq (store (tensor dC_exp) (+ (/ (* (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2) (permute3 (load (tensor V) (index (elem n) fulltile fulltile)) 0 2 1)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (load (tensor dC_exp) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dV) (* (/ (load (tensor C_exp) (index (elem n) fulltile fulltile)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2)) (index (elem n) fulltile fulltile)) (seq (store (tensor dC) (+ (x (load (tensor C_exp) (index (elem n) fulltile fulltile)) (load (tensor dC_exp) (index (elem n) fulltile fulltile))) (load (tensor dC) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ) (+ (* (load (tensor dC) (index (elem n) fulltile fulltile)) (load (tensor K) (index (elem n) fulltile fulltile))) (load (tensor dQ) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dK) (+ (load (tensor dK) (index (elem n) fulltile fulltile)) (* (permute3 (load (tensor dC) (index (elem n) fulltile fulltile)) 0 2 1) (load (tensor Q) (index (elem n) fulltile fulltile)))) (index (elem n) fulltile fulltile)) (seq (sloop 0 4544 tile_k k (seq (store (tensor dQ1,dK1,dV1) (squeeze (permute3 (load (tensor dQ,dK,dV) (index (elem n) fulltile fulltile)) 1 0 2) 1) (index fulltile (tile n))) (store (output dWK) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dK1) (index fulltile (tile n)))) (index (tile k) (tile n))))) (seq (sloop 0 4544 tile_k k (store (output dWQ) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dQ1) (index fulltile (tile n)))) (index (tile k) (tile n)))) (sloop 0 4544 tile_k k (store (output dWV) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dV1) (index fulltile (tile n)))) (index (tile k) (tile n))))))))))))))"
+  },
+  {
+    "rank": 3,
+    "ir_id": 33,
+    "execution_time_ms": 0.4486656188964844,
+    "tensor_config": {
+      "M": 16,
+      "D": 64,
+      "N": 4544,
+      "P": 1024,
+      "H": 71
+    },
+    "ir_expression": "(ploop 0 4544 64 n (seq (store (tensor Q,K,V) (permute3 (unsqueeze (load (tensor Q1,K1,V1) (index fulltile (tile n))) 1) 1 0 2) (index (elem n) fulltile fulltile)) (seq (store (tensor C_exp) (exp (* (load (tensor Q) (index (elem n) fulltile fulltile)) (permute3 (load (tensor K) (index (elem n) fulltile fulltile)) 0 2 1))) (index (elem n) fulltile fulltile)) (seq (store (tensor dC_exp) (+ (load (tensor dC_exp) (index (elem n) fulltile fulltile)) (/ (* (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2) (permute3 (load (tensor V) (index (elem n) fulltile fulltile)) 0 2 1)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2))) (index (elem n) fulltile fulltile)) (seq (store (tensor dV) (* (/ (load (tensor C_exp) (index (elem n) fulltile fulltile)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2)) (index (elem n) fulltile fulltile)) (seq (store (tensor dC) (+ (load (tensor dC) (index (elem n) fulltile fulltile)) (x (load (tensor dC_exp) (index (elem n) fulltile fulltile)) (load (tensor C_exp) (index (elem n) fulltile fulltile)))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ) (+ (* (load (tensor dC) (index (elem n) fulltile fulltile)) (load (tensor K) (index (elem n) fulltile fulltile))) (load (tensor dQ) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dK) (+ (load (tensor dK) (index (elem n) fulltile fulltile)) (* (permute3 (load (tensor dC) (index (elem n) fulltile fulltile)) 0 2 1) (load (tensor Q) (index (elem n) fulltile fulltile)))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ1,dK1,dV1) (squeeze (permute3 (load (tensor dQ,dK,dV) (index (elem n) fulltile fulltile)) 1 0 2) 1) (index fulltile (tile n))) (seq (sloop 0 4544 tile_k k (store (output dWQ) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dQ1) (index fulltile (tile n)))) (index (tile k) (tile n)))) (seq (sloop 0 4544 tile_k k (store (output dWK) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dK1) (index fulltile (tile n)))) (index (tile k) (tile n)))) (sloop 0 4544 tile_k k (store (output dWV) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dV1) (index fulltile (tile n)))) (index (tile k) (tile n)))))))))))))))"
+  },
+  {
+    "rank": 4,
+    "ir_id": 37,
+    "execution_time_ms": 0.44869632720947267,
+    "tensor_config": {
+      "M": 16,
+      "D": 64,
+      "N": 4544,
+      "P": 1024,
+      "H": 71
+    },
+    "ir_expression": "(ploop 0 4544 64 n (seq (store (tensor Q,K,V) (permute3 (unsqueeze (load (tensor Q1,K1,V1) (index fulltile (tile n))) 1) 1 0 2) (index (elem n) fulltile fulltile)) (seq (store (tensor C_exp) (exp (* (load (tensor Q) (index (elem n) fulltile fulltile)) (permute3 (load (tensor K) (index (elem n) fulltile fulltile)) 0 2 1))) (index (elem n) fulltile fulltile)) (seq (store (tensor dC_exp) (+ (load (tensor dC_exp) (index (elem n) fulltile fulltile)) (/ (* (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2) (permute3 (load (tensor V) (index (elem n) fulltile fulltile)) 0 2 1)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2))) (index (elem n) fulltile fulltile)) (seq (store (tensor dV) (* (/ (load (tensor C_exp) (index (elem n) fulltile fulltile)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2)) (index (elem n) fulltile fulltile)) (seq (store (tensor dC) (+ (x (load (tensor dC_exp) (index (elem n) fulltile fulltile)) (load (tensor C_exp) (index (elem n) fulltile fulltile))) (load (tensor dC) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ) (+ (load (tensor dQ) (index (elem n) fulltile fulltile)) (* (load (tensor dC) (index (elem n) fulltile fulltile)) (load (tensor K) (index (elem n) fulltile fulltile)))) (index (elem n) fulltile fulltile)) (seq (store (tensor dK) (+ (* (permute3 (load (tensor dC) (index (elem n) fulltile fulltile)) 0 2 1) (load (tensor Q) (index (elem n) fulltile fulltile))) (load (tensor dK) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (sloop 0 4544 tile_k k (seq (store (tensor dQ1,dK1,dV1) (squeeze (permute3 (load (tensor dQ,dK,dV) (index (elem n) fulltile fulltile)) 1 0 2) 1) (index fulltile (tile n))) (store (output dWQ) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dQ1) (index fulltile (tile n)))) (index (tile k) (tile n))))) (seq (sloop 0 4544 tile_k k (store (output dWK) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dK1) (index fulltile (tile n)))) (index (tile k) (tile n)))) (sloop 0 4544 tile_k k (store (output dWV) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dV1) (index fulltile (tile n)))) (index (tile k) (tile n))))))))))))))"
+  },
+  {
+    "rank": 5,
+    "ir_id": 840,
+    "execution_time_ms": 0.4501913452148438,
+    "tensor_config": {
+      "M": 16,
+      "D": 64,
+      "N": 4544,
+      "P": 1024,
+      "H": 71
+    },
+    "ir_expression": "(seq (ploop 0 4544 64 n (seq (store (tensor Q,K,V) (permute3 (unsqueeze (load (tensor Q1,K1,V1) (index fulltile (tile n))) 1) 1 0 2) (index (elem n) fulltile fulltile)) (seq (store (tensor C_exp) (exp (* (load (tensor Q) (index (elem n) fulltile fulltile)) (permute3 (load (tensor K) (index (elem n) fulltile fulltile)) 0 2 1))) (index (elem n) fulltile fulltile)) (seq (store (tensor dC_exp) (+ (load (tensor dC_exp) (index (elem n) fulltile fulltile)) (/ (* (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2) (permute3 (load (tensor V) (index (elem n) fulltile fulltile)) 0 2 1)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2))) (index (elem n) fulltile fulltile)) (seq (store (tensor dV) (* (/ (load (tensor C_exp) (index (elem n) fulltile fulltile)) (bcast (rsum (load (tensor C_exp) (index (elem n) fulltile fulltile)) 2) 2)) (permute3 (unsqueeze (load (input dO2) (index fulltile (tile n))) 1) 1 0 2)) (index (elem n) fulltile fulltile)) (seq (store (tensor dC) (+ (load (tensor dC) (index (elem n) fulltile fulltile)) (x (load (tensor dC_exp) (index (elem n) fulltile fulltile)) (load (tensor C_exp) (index (elem n) fulltile fulltile)))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ) (+ (* (load (tensor dC) (index (elem n) fulltile fulltile)) (load (tensor K) (index (elem n) fulltile fulltile))) (load (tensor dQ) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dK) (+ (* (permute3 (load (tensor dC) (index (elem n) fulltile fulltile)) 0 2 1) (load (tensor Q) (index (elem n) fulltile fulltile))) (load (tensor dK) (index (elem n) fulltile fulltile))) (index (elem n) fulltile fulltile)) (seq (store (tensor dQ1,dK1,dV1) (squeeze (permute3 (load (tensor dQ,dK,dV) (index (elem n) fulltile fulltile)) 1 0 2) 1) (index fulltile (tile n))) (seq (sloop 0 4544 tile_k k (store (output dWQ) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dQ1) (index fulltile (tile n)))) (index (tile k) (tile n)))) (sloop 0 4544 tile_k k (store (output dWK) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dK1) (index fulltile (tile n)))) (index (tile k) (tile n)))))))))))))) (ploop 0 4544 64 n (ploop 0 4544 tile_k k (store (output dWV) (* (transpose (load (input X) (index fulltile (tile k)))) (load (tensor dV1) (index fulltile (tile n)))) (index (tile k) (tile n))))))"
+  }
+]

@@ -1,7 +1,3 @@
-import argparse
-import os
-
-
 def format_lisp_with_rules(code_string):
     """
     한 줄로 된 LISP 스타일 코드를 특정 규칙에 따라 보기 좋게 변환합니다.
@@ -114,28 +110,3 @@ def format_lisp_with_rules(code_string):
             return "\n".join([header] + body + [footer])
 
     return format_recursive(parsed_code)
-
-
-# parser = argparse.ArgumentParser(
-#     description="Format LISP-style code with specific rules"
-# )
-# parser.add_argument("--n", type=int, default=0, help="Case number to convert")
-# parser.add_argument("--m", type=str, default="", help="Input model type")
-# args = parser.parse_args()
-
-# # case_file = f"{os.getcwd()}/benchmark_{args.m}/{args.m}_case{args.n}.txt"
-# # case_file = f"./evaluation/vanilla/vanilla_falcon_case{args.n}.txt"
-
-# case_file = f"/home/chani227/Trinity/evaluation/backward/backward_case173.txt"
-case_file = f"/home/chani227/Trinity/Training/seq16_fwd10.txt"
-
-with open(case_file, "r") as f:
-    input_code = f.read().strip()
-
-# 함수를 호출하여 코드를 변환
-formatted_output = format_lisp_with_rules(input_code)
-
-with open(case_file, "w") as f:
-    f.write(formatted_output)
-
-# print(f"Formatted code: {case_file}")

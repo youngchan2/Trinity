@@ -1,0 +1,377 @@
+import triton
+import triton.language as tl
+import torch
+
+@triton.autotune(
+    configs = [
+        triton.Config({'BLOCK_K': 32}),
+        triton.Config({'BLOCK_K': 64}),
+        triton.Config({'BLOCK_K': 128})
+    ], key=[]
+)
+@triton.jit
+def kernel_0(
+    C_exp_ptr,
+    C_exp_stride0: tl.constexpr,
+    C_exp_stride1: tl.constexpr,
+    C_exp_stride2: tl.constexpr,
+    C_sum_ptr,
+    C_sum_stride0: tl.constexpr,
+    C_sum_stride1: tl.constexpr,
+    K_ptr,
+    K_stride0: tl.constexpr,
+    K_stride1: tl.constexpr,
+    K_stride2: tl.constexpr,
+    O_ptr,
+    O_stride0: tl.constexpr,
+    O_stride1: tl.constexpr,
+    O_stride2: tl.constexpr,
+    O2_ptr,
+    O2_stride0: tl.constexpr,
+    O2_stride1: tl.constexpr,
+    Q_ptr,
+    Q_stride0: tl.constexpr,
+    Q_stride1: tl.constexpr,
+    Q_stride2: tl.constexpr,
+    V_ptr,
+    V_stride0: tl.constexpr,
+    V_stride1: tl.constexpr,
+    V_stride2: tl.constexpr,
+    WK_ptr,
+    WK_stride0: tl.constexpr,
+    WK_stride1: tl.constexpr,
+    WQ_ptr,
+    WQ_stride0: tl.constexpr,
+    WQ_stride1: tl.constexpr,
+    WV_ptr,
+    WV_stride0: tl.constexpr,
+    WV_stride1: tl.constexpr,
+    X_ptr,
+    X_stride0: tl.constexpr,
+    X_stride1: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    D: tl.constexpr,
+    H: tl.constexpr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    P: tl.constexpr
+):
+    # Allocate intermediate tensors
+    K1 = tl.zeros((M, BLOCK_N), dtype=tl.float32)
+    Q1 = tl.zeros((M, BLOCK_N), dtype=tl.float32)
+    V1 = tl.zeros((M, BLOCK_N), dtype=tl.float32)
+
+    # Parallel loop n from 0 to Q1_dim1 with tile size BLOCK_N
+    # Executed across grid dimension 0
+    n = 0 + tl.program_id(0) * BLOCK_N
+    
+    # Sequential loop k from 0 to 4544 with tile size BLOCK_K
+    for k in range(0, 4544, BLOCK_K):
+        offset_0 = (tl.arange(0, M))[:, None] * X_stride0 + (k + tl.arange(0, BLOCK_K))[None, :] * X_stride1
+        k_indices = k + tl.arange(0, BLOCK_K)
+        mask_0 = (k_indices < N)[None, :]
+        temp_0 = tl.load(X_ptr + offset_0, mask=mask_0, other=0.0)
+        offset_1 = (k + tl.arange(0, BLOCK_K))[:, None] * WQ_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WQ_stride1
+        n_indices = n + tl.arange(0, BLOCK_N)
+        mask_1 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
+        temp_1 = tl.load(WQ_ptr + offset_1, mask=mask_1, other=0.0)
+        Q1 = (tl.dot(temp_0, temp_1).to(tl.float32) + (1 * Q1).to(tl.float32)).to(tl.float32)
+        offset_2 = (k + tl.arange(0, BLOCK_K))[:, None] * WK_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WK_stride1
+        mask_2 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
+        temp_2 = tl.load(WK_ptr + offset_2, mask=mask_2, other=0.0)
+        K1 = (tl.dot(temp_0, temp_2).to(tl.float32) + (1 * K1).to(tl.float32)).to(tl.float32)
+        offset_3 = (k + tl.arange(0, BLOCK_K))[:, None] * WV_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * WV_stride1
+        mask_3 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
+        temp_3 = tl.load(WV_ptr + offset_3, mask=mask_3, other=0.0)
+        V1 = (tl.dot(temp_0, temp_3).to(tl.float32) + (1 * V1).to(tl.float32)).to(tl.float32)
+    temp_4 = tl.expand_dims(Q1, 1)
+    offset_4 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * Q_stride0 + (tl.arange(0, M))[None, :, None] * Q_stride1 + (tl.arange(0, 64))[None, None, :] * Q_stride2
+    tl.store(Q_ptr + offset_4, tl.permute(temp_4, (1, 0, 2)))
+    temp_5 = tl.expand_dims(K1, 1)
+    offset_5 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * K_stride0 + (tl.arange(0, M))[None, :, None] * K_stride1 + (tl.arange(0, 64))[None, None, :] * K_stride2
+    tl.store(K_ptr + offset_5, tl.permute(temp_5, (1, 0, 2)))
+    temp_6 = tl.expand_dims(V1, 1)
+    offset_6 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * V_stride0 + (tl.arange(0, M))[None, :, None] * V_stride1 + (tl.arange(0, 64))[None, None, :] * V_stride2
+    tl.store(V_ptr + offset_6, tl.permute(temp_6, (1, 0, 2)))
+    offset_7 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * Q_stride0 + (tl.arange(0, M))[None, :, None] * Q_stride1 + (tl.arange(0, 64))[None, None, :] * Q_stride2
+    temp_7 = tl.load(Q_ptr + offset_7)
+    offset_8 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * K_stride0 + (tl.arange(0, M))[None, :, None] * K_stride1 + (tl.arange(0, 64))[None, None, :] * K_stride2
+    temp_8 = tl.load(K_ptr + offset_8)
+    temp_9 = tl.permute(temp_8, (0, 2, 1))
+    offset_9 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * C_exp_stride0 + (tl.arange(0, M))[None, :, None] * C_exp_stride1 + (tl.arange(0, M))[None, None, :] * C_exp_stride2
+    tl.store(C_exp_ptr + offset_9, tl.exp(tl.dot(temp_7, temp_9).to(tl.float32)))
+    offset_10 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * C_exp_stride0 + (tl.arange(0, M))[None, :, None] * C_exp_stride1 + (tl.arange(0, M))[None, None, :] * C_exp_stride2
+    temp_10 = tl.load(C_exp_ptr + offset_10)
+    offset_11 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None] * C_sum_stride0 + (tl.arange(0, M))[None, :] * C_sum_stride1
+    tl.store(C_sum_ptr + offset_11, tl.sum(temp_10, axis=2))
+    offset_12 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * V_stride0 + (tl.arange(0, M))[None, :, None] * V_stride1 + (tl.arange(0, 64))[None, None, :] * V_stride2
+    temp_11 = tl.load(V_ptr + offset_12)
+    offset_13 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * O_stride0 + (tl.arange(0, M))[None, :, None] * O_stride1 + (tl.arange(0, 64))[None, None, :] * O_stride2
+    tl.store(O_ptr + offset_13, tl.dot(temp_10, temp_11))
+    offset_14 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * O_stride0 + (tl.arange(0, M))[None, :, None] * O_stride1 + (tl.arange(0, 64))[None, None, :] * O_stride2
+    temp_12 = tl.load(O_ptr + offset_14)
+    offset_15 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None] * C_sum_stride0 + (tl.arange(0, M))[None, :] * C_sum_stride1
+    temp_13 = tl.load(C_sum_ptr + offset_15)
+    offset_M = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * O_stride0 + (tl.arange(0, M))[None, :, None] * O_stride1 + (tl.arange(0, 64))[None, None, :] * O_stride2
+    tl.store(O_ptr + offset_M, (temp_12 / temp_13[:, :, None]))
+    temp_14 = tl.permute(temp_12, (1, 0, 2))
+    # Squeeze dimension 1 from O
+    temp_15 = tl.reshape(temp_14, (M, D))
+    offset_17 = (tl.arange(0, M))[:, None] * O2_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * O2_stride1
+    n_indices = n + tl.arange(0, BLOCK_N)
+    mask_4 = (n_indices < N)[None, :]
+    tl.store(O2_ptr + offset_17, temp_15.to(tl.float32), mask=mask_4)
+
+
+
+@triton.autotune(
+    configs = [
+        triton.Config({'BLOCK_K': 32}),
+        triton.Config({'BLOCK_K': 64}),
+        triton.Config({'BLOCK_K': 128})
+    ], key=[]
+)
+@triton.jit
+def kernel_1(
+    C_exp_ptr,
+    C_exp_stride0: tl.constexpr,
+    C_exp_stride1: tl.constexpr,
+    C_exp_stride2: tl.constexpr,
+    C_sum_ptr,
+    C_sum_stride0: tl.constexpr,
+    C_sum_stride1: tl.constexpr,
+    K_ptr,
+    K_stride0: tl.constexpr,
+    K_stride1: tl.constexpr,
+    K_stride2: tl.constexpr,
+    O_ptr,
+    O_stride0: tl.constexpr,
+    O_stride1: tl.constexpr,
+    O_stride2: tl.constexpr,
+    Q_ptr,
+    Q_stride0: tl.constexpr,
+    Q_stride1: tl.constexpr,
+    Q_stride2: tl.constexpr,
+    V_ptr,
+    V_stride0: tl.constexpr,
+    V_stride1: tl.constexpr,
+    V_stride2: tl.constexpr,
+    X_ptr,
+    X_stride0: tl.constexpr,
+    X_stride1: tl.constexpr,
+    dO2_ptr,
+    dO2_stride0: tl.constexpr,
+    dO2_stride1: tl.constexpr,
+    dWK_ptr,
+    dWK_stride0: tl.constexpr,
+    dWK_stride1: tl.constexpr,
+    dWQ_ptr,
+    dWQ_stride0: tl.constexpr,
+    dWQ_stride1: tl.constexpr,
+    dWV_ptr,
+    dWV_stride0: tl.constexpr,
+    dWV_stride1: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    D: tl.constexpr,
+    H: tl.constexpr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    P: tl.constexpr
+):
+    # Allocate intermediate tensors
+    dC = tl.zeros((1, M, M), dtype=tl.float32)
+    dC_exp = tl.zeros((1, M, M), dtype=tl.float32)
+    dC_sum = tl.zeros((1, M), dtype=tl.float32)
+    dK = tl.zeros((1, M, D), dtype=tl.float32)
+    dK1 = tl.zeros((M, BLOCK_N), dtype=tl.float32)
+    dO_tmp = tl.zeros((1, M, D), dtype=tl.float32)
+    dQ = tl.zeros((1, M, D), dtype=tl.float32)
+    dQ1 = tl.zeros((M, BLOCK_N), dtype=tl.float32)
+    dV1 = tl.zeros((M, BLOCK_N), dtype=tl.float32)
+
+    # Parallel loop n from 0 to dO2_dim1 with tile size BLOCK_N
+    # Executed across grid dimension 0
+    n = 0 + tl.program_id(0) * BLOCK_N
+    
+    offset_0 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None] * C_sum_stride0 + (tl.arange(0, M))[None, :] * C_sum_stride1
+    temp_0 = tl.load(C_sum_ptr + offset_0)
+    offset_1 = (tl.arange(0, M))[:, None] * dO2_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * dO2_stride1
+    n_indices = n + tl.arange(0, BLOCK_N)
+    mask_5 = (n_indices < N)[None, :]
+    temp_1 = tl.load(dO2_ptr + offset_1, mask=mask_5, other=0.0)
+    temp_2 = tl.expand_dims(temp_1, 1)
+    temp_3 = tl.permute(temp_2, (1, 0, 2))
+    dO_tmp = (dO_tmp + ((1 / temp_0[:, :, None]).to(tl.float32) * temp_3).to(tl.float32)).to(tl.float32)
+    temp_4 = tl.expand_dims(temp_1, 1)
+    temp_5 = tl.permute(temp_4, (1, 0, 2))
+    offset_2 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * O_stride0 + (tl.arange(0, M))[None, :, None] * O_stride1 + (tl.arange(0, 64))[None, None, :] * O_stride2
+    temp_6 = tl.load(O_ptr + offset_2)
+    dC_sum = (dC_sum + (0 - tl.sum((temp_5 * (temp_6 / temp_0[:, :, None]).to(tl.float32)).to(tl.float32), axis=2, dtype=tl.float32)).to(tl.float32)).to(tl.float32)
+    offset_3 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * V_stride0 + (tl.arange(0, M))[None, :, None] * V_stride1 + (tl.arange(0, 64))[None, None, :] * V_stride2
+    temp_7 = tl.load(V_ptr + offset_3)
+    temp_8 = tl.permute(temp_7, (0, 2, 1))
+    dC_exp = (dC_exp + tl.dot(dO_tmp, temp_8).to(tl.float32)).to(tl.float32)
+    offset_4 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * C_exp_stride0 + (tl.arange(0, M))[None, :, None] * C_exp_stride1 + (tl.arange(0, M))[None, None, :] * C_exp_stride2
+    temp_9 = tl.load(C_exp_ptr + offset_4)
+    temp_10 = tl.permute(temp_9, (0, 2, 1))
+    dV = tl.dot(temp_10, dO_tmp).to(tl.float32)
+    dC_exp = (dC_sum[:, :, None] + dC_exp).to(tl.float32)
+    dC = ((dC_exp * temp_9).to(tl.float32) + dC).to(tl.float32)
+    offset_5 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * K_stride0 + (tl.arange(0, M))[None, :, None] * K_stride1 + (tl.arange(0, 64))[None, None, :] * K_stride2
+    temp_11 = tl.load(K_ptr + offset_5)
+    dQ = (dQ + tl.dot(dC, temp_11).to(tl.float32)).to(tl.float32)
+    temp_12 = tl.permute(dC, (0, 2, 1))
+    offset_6 = (((n // BLOCK_N)+tl.arange(0, 1)))[:, None, None] * Q_stride0 + (tl.arange(0, M))[None, :, None] * Q_stride1 + (tl.arange(0, 64))[None, None, :] * Q_stride2
+    temp_13 = tl.load(Q_ptr + offset_6)
+    dK = (dK + tl.dot(temp_12, temp_13).to(tl.float32)).to(tl.float32)
+    # Sequential loop k from 0 to 4544 with tile size BLOCK_K
+    for k in range(0, 4544, BLOCK_K):
+        temp_14 = tl.permute(dQ, (1, 0, 2))
+        # Squeeze dimension 1 from dQ
+        temp_15 = tl.reshape(temp_14, (M, D))
+        dQ1 = temp_15
+        temp_M = tl.permute(dK, (1, 0, 2))
+        # Squeeze dimension 1 from dK
+        temp_17 = tl.reshape(temp_M, (M, D))
+        dK1 = temp_17
+        temp_18 = tl.permute(dV, (1, 0, 2))
+        # Squeeze dimension 1 from dV
+        temp_19 = tl.reshape(temp_18, (M, D))
+        dV1 = temp_19
+        offset_7 = (tl.arange(0, M))[:, None] * X_stride0 + (k + tl.arange(0, BLOCK_K))[None, :] * X_stride1
+        k_indices = k + tl.arange(0, BLOCK_K)
+        mask_6 = (k_indices < N)[None, :]
+        temp_20 = tl.load(X_ptr + offset_7, mask=mask_6, other=0.0)
+        temp_21 = tl.trans(temp_20)
+        offset_8 = (k + tl.arange(0, BLOCK_K))[:, None] * dWQ_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * dWQ_stride1
+        n_indices = n + tl.arange(0, BLOCK_N)
+        mask_7 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
+        tl.store(dWQ_ptr + offset_8, tl.dot(temp_21, dQ1).to(tl.float32), mask=mask_7)
+    # Sequential loop k from 0 to 4544 with tile size BLOCK_K
+    for k in range(0, 4544, BLOCK_K):
+        offset_9 = (tl.arange(0, M))[:, None] * X_stride0 + (k + tl.arange(0, BLOCK_K))[None, :] * X_stride1
+        k_indices = k + tl.arange(0, BLOCK_K)
+        mask_8 = (k_indices < N)[None, :]
+        temp_22 = tl.load(X_ptr + offset_9, mask=mask_8, other=0.0)
+        temp_23 = tl.trans(temp_22)
+        offset_10 = (k + tl.arange(0, BLOCK_K))[:, None] * dWK_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * dWK_stride1
+        n_indices = n + tl.arange(0, BLOCK_N)
+        mask_9 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
+        tl.store(dWK_ptr + offset_10, tl.dot(temp_23, dK1).to(tl.float32), mask=mask_9)
+        temp_24 = tl.trans(temp_22)
+        offset_11 = (k + tl.arange(0, BLOCK_K))[:, None] * dWV_stride0 + (n + tl.arange(0, BLOCK_N))[None, :] * dWV_stride1
+        mask_10 = (k_indices < N)[:, None] & (n_indices < N)[None, :]
+        tl.store(dWV_ptr + offset_11, tl.dot(temp_24, dV1).to(tl.float32), mask=mask_10)
+
+
+# Metadata for benchmark.py
+TENSOR_PARAMS = ['C_exp', 'C_sum', 'K', 'O', 'O2', 'Q', 'V', 'WK', 'WQ', 'WV', 'X', 'dO2', 'dWK', 'dWQ', 'dWV']
+BLOCK_PARAMS = ['block_k']
+
+def forward(C_exp, C_sum, K, O, O2, Q, V, WK, WQ, WV, X, dO2, dWK, dWQ, dWV, block_k=16):
+    """
+    Wrapper function that executes all kernels sequentially.
+    """
+    kernel_0[((4544 - 0 + 64 - 1) // 64,)](
+        C_exp,
+        C_exp.stride(0),
+        C_exp.stride(1),
+        C_exp.stride(2),
+        C_sum,
+        C_sum.stride(0),
+        C_sum.stride(1),
+        K,
+        K.stride(0),
+        K.stride(1),
+        K.stride(2),
+        O,
+        O.stride(0),
+        O.stride(1),
+        O.stride(2),
+        O2,
+        O2.stride(0),
+        O2.stride(1),
+        Q,
+        Q.stride(0),
+        Q.stride(1),
+        Q.stride(2),
+        V,
+        V.stride(0),
+        V.stride(1),
+        V.stride(2),
+        WK,
+        WK.stride(0),
+        WK.stride(1),
+        WQ,
+        WQ.stride(0),
+        WQ.stride(1),
+        WV,
+        WV.stride(0),
+        WV.stride(1),
+        X,
+        X.stride(0),
+        X.stride(1),
+        # BLOCK_K are provided by autotune,
+        BLOCK_N=64,
+        # BLOCK_K is automatically set by autotune,
+        D=64,
+        H=71,
+        M=16,
+        N=4544,
+        P=1024
+    )
+
+    kernel_1[((4544 - 0 + 64 - 1) // 64,)](
+        C_exp,
+        C_exp.stride(0),
+        C_exp.stride(1),
+        C_exp.stride(2),
+        C_sum,
+        C_sum.stride(0),
+        C_sum.stride(1),
+        K,
+        K.stride(0),
+        K.stride(1),
+        K.stride(2),
+        O,
+        O.stride(0),
+        O.stride(1),
+        O.stride(2),
+        Q,
+        Q.stride(0),
+        Q.stride(1),
+        Q.stride(2),
+        V,
+        V.stride(0),
+        V.stride(1),
+        V.stride(2),
+        X,
+        X.stride(0),
+        X.stride(1),
+        dO2,
+        dO2.stride(0),
+        dO2.stride(1),
+        dWK,
+        dWK.stride(0),
+        dWK.stride(1),
+        dWQ,
+        dWQ.stride(0),
+        dWQ.stride(1),
+        dWV,
+        dWV.stride(0),
+        dWV.stride(1),
+        # BLOCK_K are provided by autotune,
+        BLOCK_N=64,
+        # BLOCK_K is automatically set by autotune,
+        D=64,
+        H=71,
+        M=16,
+        N=4544,
+        P=1024
+    )
+
+    # Return output tensors if needed
+    # This depends on your specific use case
+    pass

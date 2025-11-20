@@ -489,7 +489,7 @@ import torch
             
             # Identify accumulators
             accumulators = self._identify_accumulators(op)
-            print(f"@@ {accumulators}")
+            # print(f"@@ {accumulators}")
             # Identify cross-sloop tensors
             cross_sloop_tensors = self._identify_cross_sloop_tensors(op)
             
@@ -1844,33 +1844,41 @@ import torch
         
         # Add cross-sloop tensors to memory tensors
         # BUT ONLY if they actually use sloop variables in their indices
+        # AND they are cross-kernel tensors (not just cross-sloop within same kernel)
         for tensor_name in cross_sloop_tensors:
             if tensor_name in self.intermediate_tensors:
+                # Skip tensors that are only cross-sloop within the same kernel
+                # They can be local intermediate tensors
+                if tensor_name not in self.cross_kernel_tensors:
+                    # This tensor only crosses sloops within the same kernel
+                    # It can be a local intermediate tensor with tl.zeros
+                    continue
+
                 # Check if this tensor uses any sloop variables
                 uses_sloop_var = tensor_name in tensor_sloop_vars and len(tensor_sloop_vars[tensor_name]) > 0
-                
+
                 if not uses_sloop_var:
                     # This tensor doesn't use any sloop variables, so it's not really cross-sloop
                     # Examples: Q1, K1, V1 with index pattern (fulltile, tile_n) where n is ploop var
                     continue
-                
+
                 # Check if this tensor only uses fulltile indices
                 if tensor_name in tensor_index_patterns:
                     all_patterns = set()
                     for patterns in tensor_index_patterns[tensor_name].values():
                         all_patterns.update(patterns)
-                    
+
                     # Check if all patterns contain only fulltile
                     only_fulltile = all(
-                        all('fulltile' in part and 'tile_' not in part 
+                        all('fulltile' in part and 'tile_' not in part
                             for part in pattern.split('_'))
                         for pattern in all_patterns
                     )
-                    
+
                     if only_fulltile and tensor_name not in self.cross_kernel_tensors:
                         # Skip tensors that only use fulltile and are not cross-kernel
                         continue
-                
+
                 memory_tensors.add(tensor_name)
         
         return memory_tensors
@@ -2766,7 +2774,6 @@ def {kernel_name}(
             else:
                 # Regular accumulator behavior - skip store
                 skip_this_store = True
-            print(f"$ {tensor_name} {skip_this_store}")
         
         if skip_this_store:
             
@@ -2971,7 +2978,7 @@ def {kernel_name}(
             
             # Mark this accumulator as stored if it's in a loop
             if tensor_name in self.kernel_accumulators and hasattr(self, 'current_sloop_info') and self.current_sloop_info:
-                print(f"! {tensor_name}")
+                # print(f"! {tensor_name}")
                 self.stored_accumulators.add(tensor_name)
             offset_expr = self._generate_index(index_node, tensor_name)
             

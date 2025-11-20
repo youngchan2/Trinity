@@ -12,8 +12,8 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from AstNode import ASTNode
-from NodeType import NodeType
+from codegen.AstNode import ASTNode
+from codegen.NodeType import NodeType
 
 
 def clone_ast(node: Optional[ASTNode]) -> Optional[ASTNode]:

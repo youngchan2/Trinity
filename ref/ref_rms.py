@@ -9,17 +9,17 @@ import os
 # from flash_attn import flash_attn_qkvpacked_func, flash_attn_func, flash_attn_with_kvcache
 
 # TensorRT-LLM imports
-try:
-    import tensorrt_llm
-    from tensorrt_llm import Tensor
-    from tensorrt_llm.functional import gpt_attention, rms_norm, AttentionMaskType
-    from tensorrt_llm.builder import Builder
-    from tensorrt_llm.network import net_guard
-    from tensorrt_llm.runtime import Session, TensorInfo
-    TRTLLM_AVAILABLE = True
-except ImportError as e:
-    print(f"TensorRT-LLM not available: {e}")
-    TRTLLM_AVAILABLE = False
+# try:
+#     import tensorrt_llm
+#     from tensorrt_llm import Tensor
+#     from tensorrt_llm.functional import gpt_attention, rms_norm, AttentionMaskType
+#     from tensorrt_llm.builder import Builder
+#     from tensorrt_llm.network import net_guard
+#     from tensorrt_llm.runtime import Session, TensorInfo
+#     TRTLLM_AVAILABLE = True
+# except ImportError as e:
+#     print(f"TensorRT-LLM not available: {e}")
+#     TRTLLM_AVAILABLE = False
 
 device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)

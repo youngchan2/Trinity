@@ -54,12 +54,15 @@ class AttentionBackward(nn.Module):
         O_permuted = O.permute(1, 0, 2)  # (M, H, D)
         O2 = O_permuted.reshape(M, N)  # (M, N)
 
-        return O2
+        return O2, Q1
 
 
-def compute_gradients(M, N, D, H, X, WQ, WK, WV, dO2, device='cuda:2', dtype=torch.float16):
+def compute_gradients(M, N, D, H, X, WQ, WK, WV, dO2, C_exp=None, device='cuda:2', dtype=torch.float16):
     """
-    Compute gradients using PyTorch autograd.
+    Compute gradients using PyTorch autograd or manual computation with C_exp.
+
+    Args:
+        C_exp: If provided, uses manual backward computation instead of autograd
 
     Returns:
         dWQ, dWK, dWV: (N, N) gradients
@@ -70,14 +73,62 @@ def compute_gradients(M, N, D, H, X, WQ, WK, WV, dO2, device='cuda:2', dtype=tor
     WV = WV.clone().detach().requires_grad_(True)
     X = X.clone().detach()
 
-    # Forward pass
+    # if C_exp is None:
+    # Standard autograd path
     model = AttentionBackward(M, N, D, H).to(device).to(dtype)
-    O2 = model(X, WQ, WK, WV)
-
-    # Backward pass
+    O2, Q1 = model(X, WQ, WK, WV)
     O2.backward(dO2)
+    return WQ.grad, WK.grad, WV.grad, Q1
+    # else:
+    #     # Manual backward computation using provided C_exp
+    #     # Forward pass (recompute needed intermediate values)
+    #     Q1 = X @ WQ  # (M, N)
+    #     K1 = X @ WK  # (M, N)
+    #     V1 = X @ WV  # (M, N)
 
-    return WQ.grad, WK.grad, WV.grad
+    #     Q = Q1.view(M, H, D).permute(1, 0, 2)  # (H, M, D)
+    #     K = K1.view(M, H, D).permute(1, 0, 2)  # (H, M, D)
+    #     V = V1.view(M, H, D).permute(1, 0, 2)  # (H, M, D)
+
+    #     # Backward computation
+    #     # dO2 -> dO
+    #     dO = dO2.view(M, H, D).permute(1, 0, 2)  # (H, M, D)
+
+    #     # C_exp normalization
+    #     C_sum = C_exp.sum(dim=-1, keepdim=True)  # (H, M, 1)
+    #     C_normalized = C_exp / C_sum  # (H, M, M)
+
+    #     # dL/dV = C_normalized^T @ dO
+    #     dV = torch.matmul(C_normalized.transpose(-2, -1), dO)  # (H, M, D)
+
+    #     # dL/dC_normalized = dO @ V^T
+    #     dC_normalized = torch.matmul(dO, V.transpose(-2, -1))  # (H, M, M)
+
+    #     # Backward through normalization (C_exp / C_sum)
+    #     # dL/dC_exp = dL/dC_normalized * (1/C_sum - C_exp/(C_sum^2) * sum_j(dL/dC_normalized))
+    #     dC_sum = -(dC_normalized * C_normalized).sum(dim=-1, keepdim=True)  # (H, M, 1)
+    #     dC_exp = dC_normalized / C_sum + dC_sum * C_exp / (C_sum ** 2)  # (H, M, M)
+
+    #     # Backward through exp (assuming C = exp(scores))
+    #     dC = dC_exp * C_exp  # (H, M, M)
+
+    #     # dL/dQ = dC @ K
+    #     dQ = torch.matmul(dC, K)  # (H, M, D)
+
+    #     # dL/dK = dC^T @ Q
+    #     dK = torch.matmul(dC.transpose(-2, -1), Q)  # (H, M, D)
+
+    #     # Reshape gradients back to (M, N)
+    #     dQ1 = dQ.permute(1, 0, 2).reshape(M, N)  # (M, N)
+    #     dK1 = dK.permute(1, 0, 2).reshape(M, N)  # (M, N)
+    #     dV1 = dV.permute(1, 0, 2).reshape(M, N)  # (M, N)
+
+    #     # Compute weight gradients
+    #     dWQ = X.T @ dQ1  # (N, N)
+    #     dWK = X.T @ dK1  # (N, N)
+    #     dWV = X.T @ dV1  # (N, N)
+
+    #     return dWQ, dWK, dWV
 
 
 def test_backward():
