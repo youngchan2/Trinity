@@ -17,6 +17,7 @@ import argparse
 from codegen.convert_module import convert_ir_to_triton
 from utils.discord import send_discord_notification
 from utils.shapes import TensorShapeBuilder
+from utils.config import load_model_config
 
 @dataclass
 class BenchmarkResult:
@@ -28,8 +29,13 @@ class BenchmarkResult:
 
 
 class BackwardBenchmark:
-    def __init__(self, tensor_config: Dict[str, int]):
-        """Initialize backward benchmark with given tensor configuration."""
+    def __init__(self, tensor_config: Dict[str, int], device_num: int = 0):
+        """Initialize backward benchmark with given tensor configuration.
+
+        Args:
+            tensor_config: Dictionary containing M, N, D, H, P parameters
+            device_num: CUDA device number (default: 0)
+        """
         # Extract dimensions from config
         self.M = tensor_config['M']
         self.N = tensor_config['N']
@@ -47,7 +53,7 @@ class BackwardBenchmark:
         self.const_dict = tensor_config.copy()
 
         # Setup device
-        self.device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(f'cuda:{device_num}' if torch.cuda.is_available() else 'cpu')
         torch.cuda.set_device(self.device)
         print(f"GPU: {torch.cuda.get_device_name(self.device)}")
 
@@ -393,13 +399,24 @@ class BackwardBenchmark:
         self._temp_files = []
 
 
-def run_comprehensive_benchmark(tensor_configs, ir_file, start_expressions, num_expressions, top_k, output_file):
-    """Run benchmarks for all tensor shape configurations."""
+def run_comprehensive_benchmark(tensor_configs, ir_file, start_expressions, num_expressions, top_k, output_file, device_num=0):
+    """Run benchmarks for all tensor shape configurations.
+
+    Args:
+        tensor_configs: List of tensor configuration dictionaries
+        ir_file: Path to IR expressions file
+        start_expressions: Starting expression ID
+        num_expressions: Number of expressions to benchmark
+        top_k: Number of top results to return
+        output_file: Path to save results
+        device_num: CUDA device number (default: 0)
+    """
     all_results = []
     benchmark_instances = []
 
     print(f"Running comprehensive backward benchmark with:")
     print(f"  - {len(tensor_configs)} tensor configurations")
+    print(f"  - Device: cuda:{device_num}")
     print()
 
     # Initialize output file with empty list
@@ -410,7 +427,7 @@ def run_comprehensive_benchmark(tensor_configs, ir_file, start_expressions, num_
         print(f"\nTensor Configuration {tensor_idx + 1}/{len(tensor_configs)}: M={tensor_config['M']}, N={tensor_config['N']}, D={tensor_config['D']}, H={tensor_config['H']}")
 
         # Initialize benchmark with this tensor configuration
-        benchmark = BackwardBenchmark(tensor_config)
+        benchmark = BackwardBenchmark(tensor_config, device_num)
         benchmark_instances.append(benchmark)
 
         try:
@@ -572,33 +589,40 @@ def save_top_k_results(top_results, output_file):
 
 def main():
     """Main function to run backward IR benchmarks."""
-    # Configuration
-    TENSOR_FILE = "./falcon_configs.json"
+    # Default configuration
     START_EXPRESSIONS = 0
     NUM_EXPRESSIONS = 10
     TOP_K = 5
 
-    with open(TENSOR_FILE, 'r') as f:
-        TENSOR_CONFIGS = json.load(f)
-
     parser = argparse.ArgumentParser(description="Run comprehensive backward IR benchmarks")
     parser.add_argument('--ir', type=str, default=None, help="Path to the backward IR expressions file")
+    parser.add_argument('--seq', type=int, help="Sequence Length")
     parser.add_argument('--case', type=int, required=True, help="Choose BWD list case")
+    parser.add_argument('--model', '-m', type=str, default='falcon', help="Model type (falcon, llama, etc.)")
+    parser.add_argument('--device', '-d', type=int, default=0, help="CUDA device number (default: 0)")
     parser.add_argument('--output', type=str, default=None, help="Path to save benchmark results")
     parser.add_argument('--start', type=int, default=START_EXPRESSIONS, help="Start from test case ID")
     parser.add_argument('--num', type=int, default=NUM_EXPRESSIONS, help="Number of expressions to benchmark")
     parser.add_argument('--end', action='store_true', help="Run from start ID to the last test case")
     parser.add_argument('--topk', type=int, default=TOP_K, help="Number of top kernels to report")
     parser.add_argument('--all', action='store_true', help="Run all configurations comprehensively")
-    parser.add_argument('--webhook', type=str, help="Discord webhook URL for notifications")
+    parser.add_argument('--webhook', type=str, default=os.getenv('DISCORD_WEBHOOK'), help="Discord webhook URL for notifications")
 
     args = parser.parse_args()
 
+    # Load model configuration from JSON
+    try:
+        tensor_config = load_model_config(args.model)
+        TENSOR_CONFIGS = [tensor_config]  # Wrap in list for compatibility
+    except Exception as e:
+        print(f"Error loading model configuration: {e}")
+        return
+
     # Set default paths based on case number if not provided
     if args.ir is None:
-        args.ir = f"/home/chani227/Trinity/TileIR/expressions/seq16_bwd{args.case}_list.txt"
+        args.ir = f"/home/chani227/Trinity/TileIR/expressions/data/bwd/seq{args.seq}_bwd{args.case}_list.txt"
     if args.output is None:
-        args.output = f"/home/chani227/Trinity/Training/seq16_bwd{args.case}.json"
+        args.output = f"/home/chani227/Trinity/Training/data/bwd_json/seq{args.seq}_bwd{args.case}.json"
 
     # Validate conflicting arguments
     if args.end and args.num != NUM_EXPRESSIONS:
@@ -627,7 +651,8 @@ def main():
         args.start,
         total_expressions,
         args.topk,
-        args.output
+        args.output,
+        args.device
     )
 
     print(f"\nAll results saved to: {args.output}")

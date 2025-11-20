@@ -1,5 +1,6 @@
 from codegen.convert_module import convert_ir_to_triton
 from utils.shapes import get_forward_shape_dict
+from utils.config import load_model_config, setup_directories
 # from baseline.inductor import benchmark_rms
 import argparse
 import torch
@@ -10,7 +11,9 @@ parser = argparse.ArgumentParser(description="Convert IR to Triton kernel")
 parser.add_argument("--n", type=int, default=0, help="Case number to convert")
 parser.add_argument("--m", type=str, default="falcon", help="Input model type")
 parser.add_argument("--t", type=str, default="vanilla", help="RMS Type")
+parser.add_argument("--s", type=int, help="Sequence Length")
 parser.add_argument("--o", type=int, default=0, help="0 only convert, 1 only test, 2 both convert and test")
+parser.add_argument("--d", type=int, default=0, help="CUDA device number")
 parser.add_argument("--pre", action="store_true", help="Whether to use prenorm or not")
 args = parser.parse_args()
 
@@ -18,54 +21,56 @@ num = args.n
 option = args.o
 model = args.m
 rms = args.t
+seq = args.s
 pre = args.pre
-device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+gpu = args.d
+device = torch.device(f'cuda:{gpu}' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
 dtype = torch.float32
 
-case_file = f"./seq16_fwd{num}.txt"
-output_file = f"./seq16_fwd{num}.py"
-module_name = f"{rms}_{model}_best" if not pre else f"{rms}_{model}_prenorm_best"
+def initialize_paths_and_configs(num, seq, model, rms, pre):
+    """
+    Initialize file paths, model configurations, and load IR code.
 
-with open(case_file, "r") as f:
-    llama_ir = f.read().strip()
+    Returns:
+        tuple: (case_file, output_file, module_name, ir_code, constants,
+                tensor_shapes, M, N, D, H, P)
+    """
+    # Setup file paths
+    case_file = f"/home/chani227/Trinity/CodeGen/Training/data/fwd/seq{seq}_fwd{num}.txt"
+    output_file = f"/home/chani227/Trinity/CodeGen/Training/data/fwd/seq{seq}_fwd{num}.py"
+    module_name = f"{rms}_{model}_best" if not pre else f"{rms}_{model}_prenorm_best"
 
-if model == "falcon":
-    M = 16
-    D = 64
-    N = 4544
-    P = 1024
-    H = 71
-    
-    constants = {
-        'M': 16,
-        'D': 64,
-        'N': 4544,
-        'P': 1024,
-        'H': 71
-    }
-elif model == "llama":
-    M = 16
-    D = 128
-    N = 4096
-    H = 32
-    P = 1024
-    
-    constants = {
-        'M': 16,
-        'D': 128,
-        'N': 4096,
-        'P': 1024,
-        'H': 32
-    }
+    # Load IR code
+    with open(case_file, "r") as f:
+        ir_code = f.read().strip()
 
-# Get forward tensor shapes from utils
-tensor_shapes = get_forward_shape_dict()
+    # Load model-specific constants from JSON
+    constants = load_model_config(model)
+    M = constants['M']
+    D = constants['D']
+    N = constants['N']
+    H = constants['H']
+    P = constants['P']
+
+    # Get forward tensor shapes from utils
+    tensor_shapes = get_forward_shape_dict()
+
+    return (case_file, output_file, module_name, ir_code, constants,
+            tensor_shapes, M, N, D, H, P)
 
 # Convert IR to Triton kernel
-def start_conversion():
+def start_conversion(ir_code, output_file, tensor_shapes, constants):
+    """
+    Convert IR code to Triton kernel and save it.
 
-    triton_code = convert_ir_to_triton(llama_ir, tensor_shapes, constants)
+    Args:
+        ir_code: IR code string
+        output_file: Output path for generated kernel
+        tensor_shapes: Tensor shape dictionary
+        constants: Model constants dictionary
+    """
+    triton_code = convert_ir_to_triton(ir_code, tensor_shapes, constants)
 
     # Save the generated kernel
     with open(output_file, "w") as f:
@@ -74,7 +79,7 @@ def start_conversion():
     print("=" * 50)
     print("✓ Triton kernel generated successfully!")
 
-def torch_baseline(X, WQ, WK, WV):
+def torch_baseline(X, WQ, WK, WV, M, N, D, H):
     """PyTorch baseline implementation for seq16_fwd0"""
     # Q1, K1, V1 = X @ WQ, X @ WK, X @ WV
     Q1 = torch.matmul(X, WQ)
@@ -103,7 +108,15 @@ def torch_baseline(X, WQ, WK, WV):
 
     return O2
 
-def start_test():
+def start_test(output_file, module_name, M, N, D, H, P):
+    """
+    Execute generated kernel and compare with PyTorch baseline.
+
+    Args:
+        output_file: Path to generated kernel file
+        module_name: Module name for importing
+        M, N, D, H, P: Model dimension parameters
+    """
     BLOCK_N = 64
     BLOCK_K = 32
     BLOCK_P = 16
@@ -159,9 +172,6 @@ def start_test():
     # RoCo
     # C_out1 = torch.zeros((H, P+M), device=device, dtype=dtype)
     # C_out2 = torch.zeros((H, P+M), device=device, dtype=dtype)
-
-    out = O2.clone()
-    ITER = 100
 
     print("=" * 50)
     print("Starting kernel execution...")
@@ -266,7 +276,7 @@ def start_test():
     print("=" * 50)
     print("Running PyTorch baseline...")
     with torch.no_grad():
-        baseline_O2 = torch_baseline(X, WQ, WK, WV)
+        baseline_O2 = torch_baseline(X, WQ, WK, WV, M, N, D, H)
 
     print("\nResults comparison:")
     print(f"Triton O2:\n{O2}")
@@ -403,10 +413,19 @@ def start_test():
     # print("=" * 50)
 
 print(f"[Case{num}]")
+
+# Setup directories and initialize configurations
+setup_directories(seq)
+(case_file, output_file, module_name, ir_code, constants,
+ tensor_shapes, M, N, D, H, P) = initialize_paths_and_configs(
+    num, seq, model, rms, pre
+)
+
+# Execute based on option
 if option == 0:
-    start_conversion()
+    start_conversion(ir_code, output_file, tensor_shapes, constants)
 elif option == 1:
-    start_test()
+    start_test(output_file, module_name, M, N, D, H, P)
 else:
-    start_conversion()
-    start_test()
+    start_conversion(ir_code, output_file, tensor_shapes, constants)
+    start_test(output_file, module_name, M, N, D, H, P)

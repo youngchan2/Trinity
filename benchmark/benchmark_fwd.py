@@ -17,6 +17,7 @@ import argparse
 from codegen.convert_module import convert_ir_to_triton
 from utils.discord import send_discord_notification
 from utils.shapes import TensorShapeBuilder
+from utils.config import load_model_config
 
 @dataclass
 class BenchmarkResult:
@@ -28,15 +29,20 @@ class BenchmarkResult:
     
     
 class RMSBenchmark:
-    def __init__(self, tensor_config: Dict[str, int]):
-        """Initialize benchmark with given tensor configuration."""
+    def __init__(self, tensor_config: Dict[str, int], device_num: int = 0):
+        """Initialize benchmark with given tensor configuration.
+
+        Args:
+            tensor_config: Dictionary containing M, N, D, H, P parameters
+            device_num: CUDA device number (default: 0)
+        """
         # Extract dimensions from config
         self.M = tensor_config['M']
         self.N = tensor_config['N']
         self.D = tensor_config['D']
         self.H = tensor_config['H']
         self.P = tensor_config['P']
-        
+
         # Store the config
         self.tensor_config = tensor_config
         shape_builder = TensorShapeBuilder(self.M, self.N, self.D, self.H, self.P)
@@ -45,7 +51,7 @@ class RMSBenchmark:
         self.const_dict = tensor_config.copy()
 
         # Setup device
-        self.device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(f'cuda:{device_num}' if torch.cuda.is_available() else 'cpu')
         torch.cuda.set_device(self.device)
         print(f"GPU: {torch.cuda.get_device_name(self.device)}")
         # if self.device.type != 'cuda':
@@ -391,24 +397,35 @@ class RMSBenchmark:
         self._temp_files = []
 
 
-def run_comprehensive_benchmark(tensor_configs, ir_file, start_expressions, num_expressions, top_k, output_file):
-    """Run benchmarks for all tensor shape configurations."""
+def run_comprehensive_benchmark(tensor_configs, ir_file, start_expressions, num_expressions, top_k, output_file, device_num=0):
+    """Run benchmarks for all tensor shape configurations.
+
+    Args:
+        tensor_configs: List of tensor configuration dictionaries
+        ir_file: Path to IR expressions file
+        start_expressions: Starting expression ID
+        num_expressions: Number of expressions to benchmark
+        top_k: Number of top results to return
+        output_file: Path to save results
+        device_num: CUDA device number (default: 0)
+    """
     all_results = []
     benchmark_instances = []
 
     print(f"Running comprehensive benchmark with:")
     print(f"  - {len(tensor_configs)} tensor configurations")
+    print(f"  - Device: cuda:{device_num}")
     print()
-    
+
     # Initialize output file with empty list
     with open(output_file, 'w') as f:
         json.dump([], f)
-    
+
     for tensor_idx, tensor_config in enumerate(tensor_configs):
         print(f"\nTensor Configuration {tensor_idx + 1}/{len(tensor_configs)}: M={tensor_config['M']}, N={tensor_config['N']}")
-        
+
         # Initialize benchmark with this tensor configuration
-        benchmark = RMSBenchmark(tensor_config)
+        benchmark = RMSBenchmark(tensor_config, device_num)
         benchmark_instances.append(benchmark)
         
         try:
@@ -569,41 +586,40 @@ def save_top_k_results(top_results, output_file):
     print(f"\nTop {len(data)} results saved to: {output_file}")
 
 def main():
-    """Main function to run Attacc IR benchmarks."""
-    # Configuration
+    """Main function to run forward IR benchmarks."""
+    # Default configuration
     IR_FILE = "/home/chani227/Trinity/Training/seq16_vanilla.txt"
     OUTPUT_FILE = "/home/chani227/Trinity/Training/seq16_vanilla.json"
-    TENSOR_FILE = "/home/chani227/Trinity/Training/falcon_configs.json"
     START_EXPRESSIONS = 0
     NUM_EXPRESSIONS = 10  # Reduced for testing multiple configurations
     TOP_K = 5  # Number of best kernels to report
-    
-    # Define tensor shape candidates
-    # TENSOR_CONFIGS = [
-    #     {'M': 16, 'N': 1024, 'P': 512, 'R': 64},      # Original config
-    #     {'M': 32, 'N': 1024, 'P': 512, 'R': 64},      # Larger batch
-    #     {'M': 16, 'N': 2048, 'P': 1024, 'R': 128},    # Larger model
-    #     {'M': 8, 'N': 512, 'P': 256, 'R': 32},        # Smaller model
-    # ]
-    with open(TENSOR_FILE, 'r') as f:
-        TENSOR_CONFIGS = json.load(f)
 
-    parser = argparse.ArgumentParser(description="Run comprehensive Attacc IR benchmarks")
+    parser = argparse.ArgumentParser(description="Run comprehensive forward IR benchmarks")
     parser.add_argument('--ir', type=str, default=IR_FILE, help="Path to the IR expressions file")
     parser.add_argument('--output', type=str, default=OUTPUT_FILE, help="Path to save benchmark results")
+    parser.add_argument('--model', '-m', type=str, default='falcon', help="Model type (falcon, llama, etc.)")
+    parser.add_argument('--device', '-d', type=int, default=0, help="CUDA device number (default: 0)")
     parser.add_argument('--start', type=int, default=START_EXPRESSIONS, help="Start from test case ID (e.g., 1881)")
     parser.add_argument('--num', type=int, default=NUM_EXPRESSIONS, help="Number of expressions to benchmark")
     parser.add_argument('--end', action='store_true', help="Run from start ID to the last test case")
     parser.add_argument('--topk', type=int, default=TOP_K, help="Number of top kernels to report")
     parser.add_argument('--all', action='store_true', help="Run all configurations comprehensively")
-    parser.add_argument('--webhook', type=str, help="Discord webhook URL for notifications")
+    parser.add_argument('--webhook', type=str, default=os.getenv('DISCORD_WEBHOOK'), help="Discord webhook URL for notifications")
     
     # Add options to customize tensor and block configs
     # parser.add_argument('--tensor-configs', type=str, help="JSON file with tensor configurations")
     # parser.add_argument('--block-configs', type=str, help="JSON file with block configurations")
 
     args = parser.parse_args()
-    
+
+    # Load model configuration from JSON
+    try:
+        tensor_config = load_model_config(args.model)
+        TENSOR_CONFIGS = [tensor_config]  # Wrap in list for compatibility
+    except Exception as e:
+        print(f"Error loading model configuration: {e}")
+        return
+
     # Validate conflicting arguments
     if args.end and args.num != NUM_EXPRESSIONS:
         print("Error: Cannot use --end and --num together. Use either --num or --end, not both.")
@@ -635,14 +651,15 @@ def main():
         return
     
     # Run comprehensive benchmarks
-    print("Starting comprehensive Attacc benchmarks...")
+    print("Starting comprehensive forward benchmarks...")
     all_results, benchmark_instances = run_comprehensive_benchmark(
-        TENSOR_CONFIGS, 
-        args.ir, 
-        args.start, 
-        total_expressions, 
+        TENSOR_CONFIGS,
+        args.ir,
+        args.start,
+        total_expressions,
         args.topk,
-        args.output  # Pass output file for incremental saving
+        args.output,  # Pass output file for incremental saving
+        args.device
     )
     
     # Results are already saved incrementally, but save again for completeness

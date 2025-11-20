@@ -1,5 +1,6 @@
 from codegen.convert_module import convert_ir_to_triton
 from utils.shapes import get_backward_shape_dict
+from utils.config import load_model_config, setup_directories
 # from baseline.inductor import benchmark_rms
 import argparse
 import torch
@@ -10,70 +11,72 @@ parser = argparse.ArgumentParser(description="Convert IR to Triton kernel")
 parser.add_argument("--n", type=int, default=0, help="BWD Case number to convert")
 parser.add_argument("--m", type=str, default="falcon", help="Input model type")
 parser.add_argument("--c", type=int, help="BWD List case number")
-# parser.add_argument("--t", type=str, default="vanilla", help="RMS Type")
+parser.add_argument("--s", type=int, help="Sequence Length")
 parser.add_argument("--o", type=int, default=0, help="0 only convert, 1 only test, 2 both convert and test")
-# parser.add_argument("--pre", action="store_true", help="Whether to use prenorm or not")
+parser.add_argument("--d", type=int, default=2)
 args = parser.parse_args()
 
 num = args.n
 list_case = args.c
 option = args.o
 model = args.m
-# rms = args.t
-# pre = args.pre
-device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+seq = args.s
+gpu = args.d
+device = torch.device(f'cuda:{gpu}' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
 dtype = torch.float32
 
-fwd_file = f"/home/chani227/Trinity/CodeGen/Training/seq16_fwd{list_case}.txt"
-fwd_output = f"/home/chani227/Trinity/CodeGen/Training/seq16_fwd{list_case}.py"
-fwd_name = f"forward_{num}"
+def initialize_paths_and_configs(num, list_case, seq, model):
+    """
+    Initialize file paths, model configurations, and load IR code.
 
-bwd_file = f"/home/chani227/Trinity/evaluation/backward/seq16_bwd{list_case}_case{num}.txt"
-bwd_output = f"/home/chani227/Trinity/evaluation/backward/seq16_{list_case}benchmark{num}.py"
-bwd_name = f"backward_{num}"
+    Returns:
+        tuple: (fwd_file, fwd_output, fwd_name, bwd_file, bwd_output,
+                bwd_name, fwd_ir, bwd_ir, constants, tensor_shapes, M, N, D, H, P)
+    """
+    # Setup file paths
+    fwd_file = f"/home/chani227/Trinity/CodeGen/Training/data/fwd/seq{seq}_fwd{list_case}.txt"
+    fwd_output = f"/home/chani227/Trinity/CodeGen/Training/data/fwd/seq{seq}_fwd{list_case}.py"
+    fwd_name = f"forward_{num}"
 
-with open(fwd_file, "r") as f:
-    fwd_ir = f.read().strip()
+    bwd_file = f"/home/chani227/Trinity/evaluation/backward/bwd/seq{seq}_bwd{list_case}_case{num}.txt"
+    bwd_output = f"/home/chani227/Trinity/evaluation/backward/bwd/seq{seq}_{list_case}benchmark{num}.py"
+    bwd_name = f"backward_{num}"
 
-with open(bwd_file, "r") as f:
-    bwd_ir = f.read().strip()
+    # Load IR code
+    with open(fwd_file, "r") as f:
+        fwd_ir = f.read().strip()
 
-if model == "falcon":
-    M = 16
-    D = 64
-    N = 4544
-    P = 1024
-    H = 71
-    
-    constants = {
-        'M': 16,
-        'D': 64,
-        'N': 4544,
-        'P': 1024,
-        'H': 71
-    }
-elif model == "llama":
-    M = 16
-    D = 128
-    N = 4096
-    H = 32
-    P = 1024
-    
-    constants = {
-        'M': 16,
-        'D': 128,
-        'N': 4096,
-        'P': 1024,
-        'H': 32
-    }
+    with open(bwd_file, "r") as f:
+        bwd_ir = f.read().strip()
 
-# Get backward tensor shapes from utils
-tensor_shapes = get_backward_shape_dict()
+    # Load model-specific constants from JSON
+    constants = load_model_config(model)
+    M = constants['M']
+    D = constants['D']
+    N = constants['N']
+    H = constants['H']
+    P = constants['P']
+
+    # Get backward tensor shapes from utils
+    tensor_shapes = get_backward_shape_dict()
+
+    return (fwd_file, fwd_output, fwd_name, bwd_file, bwd_output,
+            bwd_name, fwd_ir, bwd_ir, constants, tensor_shapes, M, N, D, H, P)
 
 # Convert IR to Triton kernel
-def start_conversion():
+def start_conversion(fwd_ir, bwd_ir, fwd_output, bwd_output, tensor_shapes, constants):
+    """
+    Convert IR code to Triton kernels and save them.
 
+    Args:
+        fwd_ir: Forward pass IR code
+        bwd_ir: Backward pass IR code
+        fwd_output: Output path for forward kernel
+        bwd_output: Output path for backward kernel
+        tensor_shapes: Tensor shape dictionary
+        constants: Model constants dictionary
+    """
     fwd_code = convert_ir_to_triton(fwd_ir, tensor_shapes, constants)
     bwd_code = convert_ir_to_triton(bwd_ir, tensor_shapes, constants)
 
@@ -87,7 +90,17 @@ def start_conversion():
     print("=" * 50)
     print("✓ Triton kernel generated successfully!")
 
-def start_test():
+def start_test(fwd_output, bwd_output, fwd_name, bwd_name, M, N, D, H, P):
+    """
+    Execute generated kernels and compare with PyTorch reference.
+
+    Args:
+        fwd_output: Path to forward kernel file
+        bwd_output: Path to backward kernel file
+        fwd_name: Forward kernel module name
+        bwd_name: Backward kernel module name
+        M, N, D, H, P: Model dimension parameters
+    """
     BLOCK_N = 64
     BLOCK_K = 32
     BLOCK_P = 16
@@ -157,9 +170,6 @@ def start_test():
     # RoCo
     C_out1 = torch.zeros((H, P+M), device=device, dtype=dtype)
     C_out2 = torch.zeros((H, P+M), device=device, dtype=dtype)
-
-    out = O2.clone()
-    ITER = 100
 
     print("=" * 50)
     print("Starting kernel execution...")
@@ -348,10 +358,19 @@ def start_test():
     print("=" * 50)
 
 print(f"[Case{num}]")
+
+# Setup directories and initialize configurations
+setup_directories(seq)
+(fwd_file, fwd_output, fwd_name, bwd_file, bwd_output,
+ bwd_name, fwd_ir, bwd_ir, constants, tensor_shapes, M, N, D, H, P) = initialize_paths_and_configs(
+    num, list_case, seq, model
+)
+
+# Execute based on option
 if option == 0:
-    start_conversion()
+    start_conversion(fwd_ir, bwd_ir, fwd_output, bwd_output, tensor_shapes, constants)
 elif option == 1:
-    start_test()
+    start_test(fwd_output, bwd_output, fwd_name, bwd_name, M, N, D, H, P)
 else:
-    start_conversion()
-    start_test()
+    start_conversion(fwd_ir, bwd_ir, fwd_output, bwd_output, tensor_shapes, constants)
+    start_test(fwd_output, bwd_output, fwd_name, bwd_name, M, N, D, H, P)
